@@ -54,6 +54,7 @@ jobs:
 
   screenshot-previews:
     needs: test-and-build
+    continue-on-error: true
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -71,7 +72,9 @@ jobs:
           node-version: 20
 
       - name: Install Playwright Chromium
-        run: npx playwright install chromium --with-deps
+        run: |
+          npm install --no-save playwright
+          npx playwright install chromium --with-deps
 
       - name: Capture landing & game screenshots
         run: |
@@ -121,7 +124,7 @@ jobs:
 
   deploy-pages:
     if: github.event_name == 'push'
-    needs: [test-and-build, screenshot-previews]
+    needs: [test-and-build]
     runs-on: ubuntu-latest
     environment:
       name: github-pages
