@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#064e3b" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="WildPK" />
+    <link rel="apple-touch-icon" href="../apple-touch-icon.png" />
+    <link rel="icon" type="image/svg+xml" href="../favicon.svg" />
+    <title>Play Wild Pakistan – 3D Wildlife Safari &amp; Ranger Game</title>
+    <meta
+      name="description"
+      content="Launch Wild Pakistan in 3D right in your browser. Choose Wild Life, Ranger Patrol, or Photo Safari across Pakistan's five conservation biomes."
+    />
+    <meta name="robots" content="index, follow, max-image-preview:large" />
+    <link id="canonical-link" rel="canonical" href="https://talha2281.github.io/Wild-Pakistan/game/" />
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Wild Pakistan – The Last Wilderness" />
+    <meta property="og:title" content="Play Wild Pakistan – 3D Wildlife Safari &amp; Ranger Game" />
+    <meta
+      property="og:description"
+      content="Choose Snow Leopard, Markhor, Brown Bear, Indus Dolphin, or Ranger and explore Pakistan's wild habitats in 3D."
+    />
+    <meta id="og-url-meta" property="og:url" content="https://talha2281.github.io/Wild-Pakistan/game/" />
+    <meta property="og:image" content="https://talha2281.github.io/Wild-Pakistan/og-image.jpg" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Play Wild Pakistan – 3D Wildlife Safari &amp; Ranger Game" />
+    <meta
+      name="twitter:description"
+      content="Free 3D wildlife survival, Ranger Patrol, and Photo Safari across five Pakistani biomes."
+    />
+    <meta name="twitter:image" content="https://talha2281.github.io/Wild-Pakistan/og-image.jpg" />
+
+    <script>
+      (function () {
+        if (typeof window === 'undefined') return;
+        var host = window.location.hostname;
+        if (host && host !== 'localhost' && host !== '127.0.0.1' && window.location.protocol.indexOf('http') === 0) {
+          var liveUrl = window.location.origin + window.location.pathname;
+          var canonical = document.getElementById('canonical-link');
+          var ogUrl = document.getElementById('og-url-meta');
+          if (canonical) canonical.setAttribute('href', liveUrl);
+          if (ogUrl) ogUrl.setAttribute('content', liveUrl);
+        }
+      })();
+    </script>
+
+    <!-- Google Tag Manager (GTM-W427ZR2S) -->
+    <script>
+      (function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+      new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+      j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+      'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+      })(window,document,'script','dataLayer','GTM-W427ZR2S');
+    </script>
+  </head>
+  <body class="bg-slate-950 text-slate-100">
+    <noscript>
+      <iframe
+        src="https://www.googletagmanager.com/ns.html?id=GTM-W427ZR2S"
+        height="0"
+        width="0"
+        style="display:none;visibility:hidden"
+      ></iframe>
+    </noscript>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

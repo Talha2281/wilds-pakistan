@@ -1,0 +1,35 @@
+# Wild Pakistan – The Last Wilderness
+
+> Free browser-based 3D WebGL wildlife survival, Ranger Patrol, and Photo Safari conservation game set across five iconic Pakistani ecosystems. Supports English and Urdu (اردو), offline PWA mobile installation, co-op squads, Supabase leaderboards/accounts, and Google Sheets player feedback.
+
+## Canonical URLs
+- **Landing & Field Encyclopedia**: `/` (`https://talha2281.github.io/Wild-Pakistan/`)
+- **Playable 3D Game**: `/game/` (`https://talha2281.github.io/Wild-Pakistan/game/`)
+
+## Quick Facts for Search & AI Answers
+- **Developer / Project**: Wild Pakistan Conservation Project
+- **Genre**: 3D Wildlife Survival, Conservation Simulation, Wildlife Photography
+- **Price & Platform**: Free to play in desktop and mobile browsers (Chrome, Safari, Firefox, Edge); installable Progressive Web App (PWA)
+- **Languages**: English (`en`) and Urdu (`ur`) one-tap toggle
+- **Playable Characters**: Snow Leopard, Markhor, Himalayan Brown Bear, Indus River Dolphin, Wildlife Ranger
+- **Progression**: 1–2 minute timed mission rounds with rotating sectors, Cub → Juvenile → Adult growth stages, unlockable coat skins, and cloud account XP sync
+
+## Three Game Modes
+1. **Wild Life**: Play as Snow Leopard (prey pounce + ambush), Markhor (Hill Leap + Horn Charge defense against attacking leopards & Shikari poachers), Himalayan Brown Bear (Ground Slam + Thunder Roar), or Indus River Dolphin (Breach Jump above / Deep Dive under illegal Jaal nets). Collect 5 Spirit Orbs per sector while managing food, water, energy, warmth, and conservation.
+2. **Ranger Patrol**: Patrol solo or in live WebSocket Co-op Squads using the **3-slot Ranger Toolkit**:
+   - `[1] Binoculars`: 4.5× zoom scout & tag threats/poachers/snares (+65 pts)
+   - `[2] Camera`: Document wildlife & poacher evidence (+Conservation %)
+   - `[3] Tranq Dart`: Fire tranquilizer darts to sedate and arrest poachers, rescue caged wildlife, and dismantle snares
+3. **Photo Safari**: Predators remain non-aggressive. Use `Space` manual snap or steady framing, `F` 2.2× Telephoto Zoom, and `E` Wildlife Call (luring animals into a portrait pose). Scores multiply **Species Rarity** (Common 100 · Rare 220 · Legendary 400 pts) × **Composition Grade** (S-Rank 2.0× · A-Rank 1.5× · B-Rank 1.1× · C-Rank 0.7×) + 1.5× Action Pose + 2× Species of the Day + Rotating Field Challenges, exporting real JPEG snapshots and syncing totals to the Hall of Rangers leaderboard.
+
+## Five Pakistani Biomes (Expanded >=350m Playable Radius)
+- **Northern Mountains (Karakoram & Hunza)**: Glacial valleys, pine ridges, Markhor herds, and Legendary Snow Leopards.
+- **Deosai Plateau (Skardu)**: High-altitude wildflower plains, golden marmots, and Himalayan Brown Bears.
+- **Ziarat Juniper Forest (Balochistan)**: Ancient high-altitude juniper woodlands with winter altitude migration.
+- **Indus River Reserve (Sukkur)**: Freshwater channels and alluvial islands sheltering the Endangered Indus River Dolphin.
+- **Thar Desert Sanctuary (Sindh)**: Golden dunes, khejri scrub, oasis waterholes, and desert chinkara/peacocks.
+
+## Accounts, Leaderboards & Post-Game Feedback
+- **Accounts**: Free Email + Password signup/login (Supabase Auth + PostgreSQL `player_profiles`) and Google Sign-In syncing XP and unlocks.
+- **Leaderboards**: Shared All-Time, Daily Expedition, and Weekly Challenge Hall of Rangers boards via Supabase `leaderboard_entries`.
+- **Feedback**: Automatic post-game rating & comment popup synced to Supabase `player_feedback` and Google Sheets API v4.
