@@ -1,22 +1,39 @@
 import { useState } from 'react';
-import { CheckCircle2, Database, LogIn, LogOut, ShieldCheck, UserPlus, X } from 'lucide-react';
+import {
+  ArrowLeft,
+  CheckCircle2,
+  Database,
+  Lock,
+  LogIn,
+  LogOut,
+  ShieldCheck,
+  UserPlus,
+  X,
+} from 'lucide-react';
 import {
   AuthAccount,
-  linkGoogleAccountToDb,
   loginFreeAccount,
   signOutAccount,
   signUpFreeAccount,
 } from '../data/auth';
-import { signInWithGoogleSheets } from '../data/googleAuthSheets';
-import { GoogleSignInButton } from './GoogleSignInButton';
 
 interface AuthModalProps {
   account: AuthAccount | null;
+  promptMessage?: string;
+  allowClose?: boolean;
+  onNavigateHome?: () => void;
   onAuthChange: (account: AuthAccount | null) => void;
   onClose: () => void;
 }
 
-export function AuthModal({ account, onAuthChange, onClose }: AuthModalProps) {
+export function AuthModal({
+  account,
+  promptMessage,
+  allowClose = true,
+  onNavigateHome,
+  onAuthChange,
+  onClose,
+}: AuthModalProps) {
   const [tab, setTab] = useState<'login' | 'signup'>('signup');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -44,22 +61,6 @@ export function AuthModal({ account, onAuthChange, onClose }: AuthModalProps) {
     }
   };
 
-  const handleGoogleSignIn = async () => {
-    setError('');
-    setStatusNote('');
-    setBusy(true);
-    try {
-      const { user } = await signInWithGoogleSheets();
-      const linked = await linkGoogleAccountToDb(user);
-      setStatusNote(linked.notice || 'Signed in with Google ✓');
-      onAuthChange(linked);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Google Sign-In failed.');
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const handleSignOut = async () => {
     setBusy(true);
     try {
@@ -72,38 +73,51 @@ export function AuthModal({ account, onAuthChange, onClose }: AuthModalProps) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/90 p-4">
       <div className="w-full max-w-md rounded-2xl border border-emerald-400/35 bg-slate-900 p-6 text-slate-100 shadow-2xl">
         <div className="flex items-start justify-between gap-3 border-b border-white/10 pb-4">
           <div>
-            <h2 className="text-lg font-bold text-white">Ranger Account (Free Cloud Sync)</h2>
+            <h2 className="text-lg font-bold text-white">Ranger Account (Secure Login)</h2>
             <p className="mt-0.5 text-xs text-slate-400">
-              Save your callsign, XP &amp; unlocks free in Supabase database + optional Google Sheets.
+              Instant signup with zero confirmation emails — saved securely in database.
             </p>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close account dialog"
-            className="rounded-lg border border-white/15 p-1.5 text-slate-300 hover:bg-white/10 hover:text-white"
-          >
-            <X className="h-4 w-4" />
-          </button>
+          {allowClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close account dialog"
+              className="rounded-lg border border-white/15 p-1.5 text-slate-300 hover:bg-white/10 hover:text-white"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          )}
         </div>
+
+        {promptMessage && !account && (
+          <div className="mt-4 flex items-start gap-2.5 rounded-xl border border-amber-400/40 bg-amber-950/35 px-3.5 py-2.5 text-xs text-amber-200">
+            <Lock className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
+            <span>{promptMessage}</span>
+          </div>
+        )}
 
         {account ? (
           <div className="mt-5 space-y-4">
             <div className="rounded-xl border border-emerald-400/35 bg-emerald-950/35 p-4">
               <div className="flex items-center gap-2 text-xs font-bold text-emerald-300">
                 <CheckCircle2 className="h-4 w-4" />
-                <span>Signed In &amp; Synced</span>
+                <span>Signed In &amp; Verified</span>
               </div>
               <div className="mt-2 text-base font-bold text-white">{account.rangerName}</div>
               <div className="text-xs text-slate-300">{account.email}</div>
               <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
                 <span className="inline-flex items-center gap-1 rounded-lg bg-slate-950/80 px-2.5 py-1 text-emerald-300">
                   <Database className="h-3 w-3" />
-                  {account.syncedToDb ? 'Saved in Supabase DB' : 'Server Session Active'}
+                  {account.syncedToDb
+                    ? 'Saved in Supabase PostgreSQL'
+                    : account.provider === 'server'
+                      ? 'Saved on Game Server'
+                      : 'Encrypted Device Vault'}
                 </span>
                 <span className="inline-flex items-center gap-1 rounded-lg bg-slate-950/80 px-2.5 py-1 text-amber-300">
                   <ShieldCheck className="h-3 w-3" />
@@ -111,19 +125,6 @@ export function AuthModal({ account, onAuthChange, onClose }: AuthModalProps) {
                 </span>
               </div>
             </div>
-
-            {account.provider !== 'google' && (
-              <div className="space-y-2 rounded-xl border border-white/10 bg-slate-950/70 p-3.5">
-                <div className="text-xs font-semibold text-slate-200">
-                  Link Google for Direct Feedback Google Sheet Sync
-                </div>
-                <GoogleSignInButton
-                  label="Connect Google Account"
-                  disabled={busy}
-                  onClick={handleGoogleSignIn}
-                />
-              </div>
-            )}
 
             <div className="flex gap-2.5">
               <button
@@ -160,7 +161,7 @@ export function AuthModal({ account, onAuthChange, onClose }: AuthModalProps) {
                 }`}
               >
                 <UserPlus className="h-3.5 w-3.5" />
-                Create Free Account
+                Create Account
               </button>
               <button
                 type="button"
@@ -257,22 +258,26 @@ export function AuthModal({ account, onAuthChange, onClose }: AuthModalProps) {
                 {busy
                   ? 'Connecting...'
                   : tab === 'signup'
-                    ? 'Create Free Account & Save XP'
-                    : 'Sign In to Account'}
+                    ? 'Create Free Account & Enter'
+                    : 'Sign In & Enter Wilderness'}
               </button>
             </form>
 
-            <div className="relative flex items-center py-1">
-              <div className="flex-grow border-t border-white/10" />
-              <span className="mx-3 text-[11px] text-slate-400 uppercase">or continue with</span>
-              <div className="flex-grow border-t border-white/10" />
+            <div className="rounded-xl border border-white/10 bg-slate-950/70 px-3 py-2 text-[11px] text-slate-400">
+              <strong className="text-slate-200">Where login is saved:</strong> Encrypted bcrypt password &amp; XP profile are stored in{' '}
+              <span className="text-emerald-300">Supabase PostgreSQL</span> (<code className="text-slate-300">player_accounts</code>) — zero confirmation emails sent.
             </div>
 
-            <GoogleSignInButton
-              label="Sign in with Google"
-              disabled={busy}
-              onClick={handleGoogleSignIn}
-            />
+            {!allowClose && onNavigateHome && (
+              <button
+                type="button"
+                onClick={onNavigateHome}
+                className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-white/15 py-2 text-xs font-semibold text-slate-300 hover:bg-white/5"
+              >
+                <ArrowLeft className="h-3.5 w-3.5" />
+                <span>Back to Home Page</span>
+              </button>
+            )}
           </div>
         )}
       </div>

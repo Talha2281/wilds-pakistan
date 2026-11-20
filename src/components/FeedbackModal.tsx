@@ -1,14 +1,13 @@
 import { useEffect, useState } from 'react';
 import {
   CheckCircle2,
-  ExternalLink,
   FileSpreadsheet,
   MessageSquarePlus,
   Send,
   Star,
   X,
 } from 'lucide-react';
-import { AuthAccount, linkGoogleAccountToDb } from '../data/auth';
+import { AuthAccount, fetchJsonSafe } from '../data/auth';
 import {
   FEEDBACK_CATEGORIES,
   FeedbackCategory,
@@ -16,17 +15,8 @@ import {
   buildFeedbackEntry,
   submitPlayerFeedback,
 } from '../data/feedback';
-import {
-  SavedFeedbackSheetMeta,
-  connectExistingFeedbackSheet,
-  createFeedbackSpreadsheet,
-  getGoogleAccessToken,
-  loadSavedFeedbackSheet,
-  signInWithGoogleSheets,
-} from '../data/googleAuthSheets';
 import { MODE_LABELS } from '../data/records';
 import { AnimalId, BiomeId, GameMode } from '../types/game';
-import { GoogleSignInButton } from './GoogleSignInButton';
 
 interface FeedbackModalProps {
   playerName: string;
@@ -37,7 +27,6 @@ interface FeedbackModalProps {
   round: number;
   score: number;
   victory: boolean;
-  onAuthChange?: (acc: AuthAccount) => void;
   onClose: () => void;
 }
 
@@ -50,7 +39,6 @@ export function FeedbackModal({
   round,
   score,
   victory,
-  onAuthChange,
   onClose,
 }: FeedbackModalProps) {
   const [rating, setRating] = useState(5);
@@ -60,83 +48,26 @@ export function FeedbackModal({
   const [submitted, setSubmitted] = useState<SubmitFeedbackResult | null>(null);
   const [error, setError] = useState('');
 
-  // Google Sheets state
-  const [hasGoogleToken, setHasGoogleToken] = useState(() => Boolean(getGoogleAccessToken()));
-  const [sheetMeta, setSheetMeta] = useState<SavedFeedbackSheetMeta | null>(() =>
-    loadSavedFeedbackSheet(),
+  const clientWebhookConfigured = Boolean(
+    typeof import.meta !== 'undefined' &&
+      import.meta.env &&
+      String(import.meta.env.VITE_SHEETS_WEBHOOK_URL || '').trim(),
   );
-  const [sheetInput, setSheetInput] = useState('');
-  const [confirmCreateSheet, setConfirmCreateSheet] = useState(false);
-  const [sheetBusy, setSheetBusy] = useState(false);
   const [serverWebhookReady, setServerWebhookReady] = useState(false);
 
   useEffect(() => {
-    setHasGoogleToken(Boolean(getGoogleAccessToken()));
-  }, [account]);
-
-  useEffect(() => {
-    if (typeof window !== 'undefined' && window.location.protocol.startsWith('http')) {
-      fetch('/api/health')
-        .then((r) => (r.ok ? r.json() : null))
-        .then((h: { sheets?: { webhookConfigured?: boolean } } | null) => {
-          if (h?.sheets?.webhookConfigured) setServerWebhookReady(true);
-        })
-        .catch(() => {});
-    }
+    let active = true;
+    fetchJsonSafe<{ sheets?: { webhookConfigured?: boolean } }>('/api/health').then((res) => {
+      if (active && res.ok && res.data?.sheets?.webhookConfigured) {
+        setServerWebhookReady(true);
+      }
+    });
+    return () => {
+      active = false;
+    };
   }, []);
 
-  const handleGoogleConnect = async () => {
-    setError('');
-    setSheetBusy(true);
-    try {
-      const { user } = await signInWithGoogleSheets();
-      setHasGoogleToken(true);
-      const linked = await linkGoogleAccountToDb(user);
-      onAuthChange?.(linked);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Google Sign-In cancelled.');
-    } finally {
-      setSheetBusy(false);
-    }
-  };
-
-  const handleCreateConfirmedSheet = async () => {
-    const token = getGoogleAccessToken();
-    if (!token) {
-      setError('Please sign in with Google first so we have permission to create your feedback sheet.');
-      return;
-    }
-    setSheetBusy(true);
-    setError('');
-    try {
-      const created = await createFeedbackSpreadsheet(token);
-      setSheetMeta(created);
-      setConfirmCreateSheet(false);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not create Google Sheet.');
-    } finally {
-      setSheetBusy(false);
-    }
-  };
-
-  const handleConnectExisting = async () => {
-    const token = getGoogleAccessToken();
-    if (!token) {
-      setError('Sign in with Google first to connect an existing Google Sheet.');
-      return;
-    }
-    setSheetBusy(true);
-    setError('');
-    try {
-      const connected = await connectExistingFeedbackSheet(sheetInput, token);
-      setSheetMeta(connected);
-      setSheetInput('');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not access that Google Sheet.');
-    } finally {
-      setSheetBusy(false);
-    }
-  };
+  const webhookActive = clientWebhookConfigured || serverWebhookReady;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -156,7 +87,7 @@ export function FeedbackModal({
         victory,
         comment: comment || `Rated ${rating}/5 in ${MODE_LABELS[mode]}`,
       });
-      const res = await submitPlayerFeedback(entry, { sheetMeta });
+      const res = await submitPlayerFeedback(entry);
       setSubmitted(res);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save feedback.');
@@ -216,24 +147,11 @@ export function FeedbackModal({
                     }`}
                   >
                     {submitted.savedToGoogleSheet
-                      ? 'Appended row directly to Google Sheets ✓'
-                      : 'Not synced (connect Google Sheet below to push rows live)'}
+                      ? 'Appended row to Feedback Google Sheet ✓'
+                      : 'Saved to Database (set VITE_SHEETS_WEBHOOK_URL to also mirror to Google Sheets)'}
                   </span>
                 </div>
               </div>
-
-              {(submitted.spreadsheetUrl || sheetMeta?.spreadsheetUrl) && (
-                <a
-                  href={submitted.spreadsheetUrl || sheetMeta?.spreadsheetUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-emerald-400/40 bg-emerald-500/15 px-3 py-1.5 text-xs font-semibold text-emerald-200 hover:bg-emerald-500/25"
-                >
-                  <FileSpreadsheet className="h-3.5 w-3.5" />
-                  <span>Open Feedback Google Sheet</span>
-                  <ExternalLink className="h-3 w-3" />
-                </a>
-              )}
             </div>
 
             <button
@@ -311,107 +229,22 @@ export function FeedbackModal({
               />
             </div>
 
-            {/* Google Sheets Integration Box */}
+            {/* Automated Google Sheets + Supabase Sync Status */}
             <div className="rounded-xl border border-sky-400/30 bg-slate-950/85 p-3.5">
               <div className="flex items-center justify-between gap-2">
                 <span className="inline-flex items-center gap-1.5 text-xs font-bold text-sky-300">
                   <FileSpreadsheet className="h-4 w-4" />
-                  <span>Google Sheets Sync</span>
+                  <span>Feedback Storage</span>
                 </span>
-                {(sheetMeta || serverWebhookReady) && (
-                  <span className="rounded bg-emerald-500/20 px-2 py-0.5 text-[10px] font-semibold text-emerald-300">
-                    {sheetMeta ? 'Sheet Linked ✓' : 'Auto Webhook Active ✓'}
-                  </span>
-                )}
+                <span className="rounded bg-emerald-500/20 px-2 py-0.5 text-[10px] font-semibold text-emerald-300">
+                  {webhookActive ? 'Database + Google Sheet Active ✓' : 'Supabase Database Active ✓'}
+                </span>
               </div>
-
-              {serverWebhookReady && !sheetMeta && (
-                <p className="mt-2 text-[11px] text-emerald-300">
-                  Central Feedback Sheet webhook is active — your rating &amp; comments automatically append to Google Sheets + Supabase!
-                </p>
-              )}
-
-              {!hasGoogleToken ? (
-                <div className="mt-2.5 space-y-2">
-                  <p className="text-[11px] text-slate-300">
-                    Sign in with Google to save feedback directly into a Google Sheet (your feedback
-                    also always saves to Supabase &amp; Server DB).
-                  </p>
-                  <GoogleSignInButton
-                    label="Sign in with Google to Sync Sheet"
-                    disabled={sheetBusy}
-                    onClick={handleGoogleConnect}
-                  />
-                </div>
-              ) : sheetMeta ? (
-                <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs">
-                  <span className="text-slate-200">
-                    Target: <strong className="text-white">{sheetMeta.spreadsheetName}</strong>
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setSheetMeta(null)}
-                    className="text-[11px] font-semibold text-slate-400 underline hover:text-white"
-                  >
-                    Change Sheet
-                  </button>
-                </div>
-              ) : (
-                <div className="mt-2.5 space-y-2.5">
-                  {confirmCreateSheet ? (
-                    <div className="rounded-lg border border-amber-400/40 bg-amber-950/35 p-2.5 text-xs">
-                      <p className="font-semibold text-amber-200">
-                        Create a new spreadsheet &ldquo;Wild Pakistan – Player Feedback&rdquo; in your
-                        Google Drive and append feedback rows there?
-                      </p>
-                      <div className="mt-2 flex gap-2">
-                        <button
-                          type="button"
-                          disabled={sheetBusy}
-                          onClick={handleCreateConfirmedSheet}
-                          className="rounded-lg bg-emerald-500 px-3 py-1.5 text-xs font-bold text-slate-950 hover:bg-emerald-400"
-                        >
-                          {sheetBusy ? 'Creating...' : 'Confirm & Create Sheet'}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setConfirmCreateSheet(false)}
-                          className="rounded-lg border border-white/15 px-3 py-1.5 text-xs text-slate-300"
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => setConfirmCreateSheet(true)}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-400/40 bg-emerald-500/15 px-3 py-1.5 text-xs font-semibold text-emerald-200 hover:bg-emerald-500/25"
-                    >
-                      <FileSpreadsheet className="h-3.5 w-3.5" />
-                      Create &ldquo;Wild Pakistan – Player Feedback&rdquo; Sheet
-                    </button>
-                  )}
-
-                  <div className="flex gap-1.5">
-                    <input
-                      type="text"
-                      value={sheetInput}
-                      onChange={(e) => setSheetInput(e.target.value)}
-                      placeholder="Or paste existing Google Sheet URL / ID..."
-                      className="flex-1 rounded-lg border border-white/15 bg-slate-900 px-2.5 py-1.5 text-xs text-white placeholder:text-slate-500 focus:outline-none"
-                    />
-                    <button
-                      type="button"
-                      disabled={sheetBusy || !sheetInput.trim()}
-                      onClick={handleConnectExisting}
-                      className="rounded-lg bg-sky-500 px-3 py-1.5 text-xs font-bold text-slate-950 hover:bg-sky-400 disabled:opacity-50"
-                    >
-                      Link
-                    </button>
-                  </div>
-                </div>
-              )}
+              <p className="mt-1.5 text-[11px] text-slate-300">
+                {webhookActive
+                  ? 'Your rating and suggestions save automatically to Supabase Database and append a live row to the Wild Pakistan Feedback Google Sheet.'
+                  : 'Your rating and suggestions save directly to Supabase Database (public.player_feedback).'}
+              </p>
             </div>
 
             {error && (

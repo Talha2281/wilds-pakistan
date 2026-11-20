@@ -1,19 +1,47 @@
-import { User } from 'firebase/auth';
-import { signOutGoogle } from './googleAuthSheets';
 import { loadProgression, saveProgression } from './progression';
 import { setLastPlayerName } from './records';
 import { getSupabaseClient, isSupabaseConfigured } from './supabaseClient';
 
-const AUTH_SESSION_KEY = 'wild_pakistan_auth_account_v1';
+const AUTH_SESSION_KEY = 'wild_pakistan_auth_session_v2';
+const LOCAL_VAULT_KEY = 'wild_pakistan_local_accounts_v2';
 
 export interface AuthAccount {
   id: string;
   email: string;
   rangerName: string;
-  provider: 'supabase' | 'google' | 'server';
+  provider: 'supabase_db' | 'server' | 'local';
   xp: number;
   syncedToDb: boolean;
   notice?: string;
+}
+
+interface LocalVaultRecord {
+  id: string;
+  email: string;
+  rangerName: string;
+  saltHex: string;
+  hashHex: string;
+  xp: number;
+}
+
+export async function fetchJsonSafe<T>(
+  input: string,
+  init?: RequestInit,
+): Promise<{ ok: boolean; status: number; data: T | null }> {
+  if (typeof window === 'undefined' || !window.location.protocol.startsWith('http')) {
+    return { ok: false, status: 0, data: null };
+  }
+  try {
+    const res = await fetch(input, init);
+    const ct = (res.headers.get('content-type') || '').toLowerCase();
+    if (!ct.includes('application/json')) {
+      return { ok: false, status: res.status, data: null };
+    }
+    const data = (await res.json()) as T;
+    return { ok: res.ok, status: res.status, data };
+  } catch {
+    return { ok: false, status: 0, data: null };
+  }
 }
 
 export function loadActiveAccount(): AuthAccount | null {
@@ -21,12 +49,12 @@ export function loadActiveAccount(): AuthAccount | null {
     const raw = localStorage.getItem(AUTH_SESSION_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<AuthAccount>;
-    if (!parsed.id || !parsed.email) return null;
+    if (!parsed.id || !parsed.email || !parsed.email.includes('@')) return null;
     return {
       id: parsed.id,
       email: parsed.email,
       rangerName: parsed.rangerName || 'Ranger',
-      provider: parsed.provider || 'supabase',
+      provider: parsed.provider || 'supabase_db',
       xp: Math.max(0, Number(parsed.xp) || 0),
       syncedToDb: Boolean(parsed.syncedToDb),
       notice: parsed.notice,
@@ -58,62 +86,56 @@ function mergeProgressionXp(remoteXp: number): number {
   return merged;
 }
 
-async function upsertProfileToSupabaseAndServer(profile: {
-  id: string;
-  email: string;
-  rangerName: string;
-  provider: 'supabase' | 'google' | 'server';
-  xp: number;
-}): Promise<boolean> {
-  const prog = loadProgression();
-  const mergedXp = Math.max(prog.xp, profile.xp);
-  let synced = false;
-
-  const sb = getSupabaseClient();
-  if (sb && isSupabaseConfigured) {
-    try {
-      const { error } = await sb.from('player_profiles').upsert(
-        {
-          id: profile.id,
-          email: profile.email.toLowerCase(),
-          ranger_name: profile.rangerName.slice(0, 32),
-          auth_provider: profile.provider,
-          xp: mergedXp,
-          equipped_skins: prog.equippedSkins ?? {},
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: 'id' },
-      );
-      if (!error) synced = true;
-    } catch {
-      // ignore cleanly
-    }
+async function hashPasswordPbkdf2(password: string, saltHex?: string): Promise<{ saltHex: string; hashHex: string }> {
+  const cryptoApi = globalThis.crypto;
+  if (!cryptoApi?.subtle) {
+    throw new Error('Secure WebCrypto is unavailable in this browser context.');
   }
+  const actualSalt =
+    saltHex ||
+    Array.from(cryptoApi.getRandomValues(new Uint8Array(16)))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+  const keyMaterial = await cryptoApi.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(password),
+    'PBKDF2',
+    false,
+    ['deriveBits'],
+  );
+  const bits = await cryptoApi.subtle.deriveBits(
+    {
+      name: 'PBKDF2',
+      salt: new TextEncoder().encode(actualSalt),
+      iterations: 100000,
+      hash: 'SHA-256',
+    },
+    keyMaterial,
+    256,
+  );
+  const hashHex = Array.from(new Uint8Array(bits))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+  return { saltHex: actualSalt, hashHex };
+}
 
-  if (typeof window !== 'undefined' && window.location.protocol.startsWith('http')) {
-    try {
-      const res = await fetch('/api/profiles', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: profile.id,
-          email: profile.email.toLowerCase(),
-          rangerName: profile.rangerName,
-          provider: profile.provider,
-          xp: mergedXp,
-          equippedSkins: prog.equippedSkins ?? {},
-        }),
-      });
-      if (res.ok) {
-        const json = (await res.json()) as { syncedSupabase?: boolean };
-        if (json.syncedSupabase) synced = true;
-      }
-    } catch {
-      // static host fallback
-    }
+function loadLocalVault(): Record<string, LocalVaultRecord> {
+  try {
+    const raw = localStorage.getItem(LOCAL_VAULT_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, LocalVaultRecord>;
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
   }
+}
 
-  return synced;
+function saveLocalVault(vault: Record<string, LocalVaultRecord>): void {
+  try {
+    localStorage.setItem(LOCAL_VAULT_KEY, JSON.stringify(vault));
+  } catch {
+    // ignore
+  }
 }
 
 export async function signUpFreeAccount(params: {
@@ -125,101 +147,113 @@ export async function signUpFreeAccount(params: {
   const password = params.password;
   const rangerName = params.rangerName.trim().slice(0, 28) || 'Ranger';
 
-  if (!email.includes('@') || email.length < 5) {
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     throw new Error('Please enter a valid email address.');
   }
   if (password.length < 6) {
     throw new Error('Password must be at least 6 characters.');
   }
+  if (rangerName.length < 2) {
+    throw new Error('Please enter a Ranger name (at least 2 characters).');
+  }
 
   const localProg = loadProgression();
-  let createdId = '';
-  let provider: AuthAccount['provider'] = 'server';
-  let syncedToDb = false;
-  let notice: string | undefined;
 
-  // 1. Primary: Free Supabase Auth + player_profiles PostgreSQL row
+  // 1. Primary Production Path: Direct Supabase PostgreSQL bcrypt RPC (zero confirmation emails, works on GitHub Pages!)
   const sb = getSupabaseClient();
   if (sb && isSupabaseConfigured) {
-    try {
-      const { data, error } = await sb.auth.signUp({
-        email,
-        password,
-        options: { data: { ranger_name: rangerName } },
-      });
-      if (!error && data.user) {
-        createdId = data.user.id;
-        provider = 'supabase';
-        syncedToDb = await upsertProfileToSupabaseAndServer({
-          id: createdId,
-          email,
-          rangerName,
-          provider: 'supabase',
-          xp: localProg.xp,
-        });
-        if (!data.session) {
-          notice =
-            'Account saved to Supabase! Verification email sent (you can play right away).';
-        }
-      } else if (error && error.message.toLowerCase().includes('already')) {
-        throw new Error('An account with this email already exists. Switch to Login.');
-      }
-    } catch (err) {
-      if (err instanceof Error && err.message.includes('already exists')) throw err;
-    }
-  }
-
-  // 2. Also register cleanly in /api/auth/signup for instant session continuity & offline/server DB persistence
-  if (typeof window !== 'undefined' && window.location.protocol.startsWith('http')) {
-    try {
-      const res = await fetch('/api/auth/signup', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: createdId || undefined,
-          email,
-          password,
-          rangerName,
-          xp: localProg.xp,
-          provider,
-        }),
-      });
-      const json = (await res.json()) as {
-        ok?: boolean;
-        error?: string;
-        account?: AuthAccount;
+    const { data, error } = await sb.rpc('register_player', {
+      p_email: email,
+      p_password: password,
+      p_ranger_name: rangerName,
+      p_xp: localProg.xp,
+    });
+    if (!error && data) {
+      const row = data as { id: string; email: string; ranger_name: string; xp: number };
+      const account: AuthAccount = {
+        id: row.id,
+        email: row.email,
+        rangerName: row.ranger_name || rangerName,
+        provider: 'supabase_db',
+        xp: mergeProgressionXp(Number(row.xp) || localProg.xp),
+        syncedToDb: true,
+        notice: 'Account created & saved in Supabase Database ✓',
       };
-      if (res.ok && json.account) {
-        createdId = createdId || json.account.id;
-        syncedToDb = syncedToDb || Boolean(json.account.syncedToDb);
-      } else if (!createdId && json.error) {
-        throw new Error(json.error);
+      saveActiveAccount(account);
+      return account;
+    }
+    if (error) {
+      const msg = error.message || '';
+      if (msg.toLowerCase().includes('already exists')) {
+        throw new Error('An account with this email already exists. Switch to Sign In.');
       }
-    } catch (err) {
-      if (!createdId && err instanceof Error) throw err;
+      if (!msg.toLowerCase().includes('could not find the function')) {
+        throw new Error(msg);
+      }
     }
   }
 
-  if (!createdId) {
-    createdId = `acc-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  // 2. Full-Stack Express API (when hosted on Node server; safely ignores GitHub Pages 404 HTML)
+  const apiRes = await fetchJsonSafe<{
+    ok?: boolean;
+    error?: string;
+    account?: AuthAccount;
+  }>('/api/auth/signup', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      email,
+      password,
+      rangerName,
+      xp: localProg.xp,
+    }),
+  });
+  if (apiRes.data?.account) {
+    const account: AuthAccount = {
+      ...apiRes.data.account,
+      xp: mergeProgressionXp(apiRes.data.account.xp),
+      notice: apiRes.data.account.syncedToDb
+        ? 'Account created & saved in Supabase Database ✓'
+        : 'Account created & saved on Server ✓',
+    };
+    saveActiveAccount(account);
+    return account;
+  }
+  if (apiRes.status === 409 && apiRes.data?.error) {
+    throw new Error(apiRes.data.error);
+  }
+  if (apiRes.status >= 400 && apiRes.status !== 404 && apiRes.data?.error) {
+    throw new Error(apiRes.data.error);
   }
 
-  const account: AuthAccount = {
-    id: createdId,
+  // 3. Static Fallback (PBKDF2-salted WebCrypto credential vault when static host has no VITE_SUPABASE_* baked in)
+  const vault = loadLocalVault();
+  if (vault[email]) {
+    throw new Error('An account with this email already exists on this device. Please Sign In.');
+  }
+  const { saltHex, hashHex } = await hashPasswordPbkdf2(password);
+  const id = `loc-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  vault[email] = {
+    id,
     email,
     rangerName,
-    provider,
+    saltHex,
+    hashHex,
     xp: localProg.xp,
-    syncedToDb,
-    notice:
-      notice ||
-      (syncedToDb
-        ? 'Account created & saved in Supabase PostgreSQL ✓'
-        : 'Account created & saved to Wild Pakistan Server ✓'),
   };
+  saveLocalVault(vault);
 
-  saveActiveAccount(account);
-  return account;
+  const localAccount: AuthAccount = {
+    id,
+    email,
+    rangerName,
+    provider: 'local',
+    xp: localProg.xp,
+    syncedToDb: false,
+    notice: 'Account saved securely on this device ✓',
+  };
+  saveActiveAccount(localAccount);
+  return localAccount;
 }
 
 export async function loginFreeAccount(params: {
@@ -229,126 +263,123 @@ export async function loginFreeAccount(params: {
   const email = params.email.trim().toLowerCase();
   const password = params.password;
 
-  if (!email.includes('@') || !password) {
-    throw new Error('Enter both your email and password.');
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !password) {
+    throw new Error('Please enter both your email and password.');
   }
 
+  // 1. Primary Production Path: Direct Supabase PostgreSQL bcrypt RPC
   const sb = getSupabaseClient();
   if (sb && isSupabaseConfigured) {
-    try {
-      const { data, error } = await sb.auth.signInWithPassword({ email, password });
-      if (!error && data.user) {
-        const metaName =
-          (data.user.user_metadata?.ranger_name as string | undefined) ||
-          email.split('@')[0];
-        let remoteXp = loadProgression().xp;
-        let rangerName = metaName;
-        let syncedToDb = true;
-
-        const { data: prof } = await sb
-          .from('player_profiles')
-          .select('ranger_name,xp')
-          .eq('id', data.user.id)
-          .maybeSingle();
-
-        if (prof) {
-          rangerName = String(prof.ranger_name || rangerName);
-          remoteXp = mergeProgressionXp(Number(prof.xp) || 0);
-        } else {
-          syncedToDb = await upsertProfileToSupabaseAndServer({
-            id: data.user.id,
-            email,
-            rangerName,
-            provider: 'supabase',
-            xp: remoteXp,
-          });
-        }
-
-        const account: AuthAccount = {
-          id: data.user.id,
-          email,
-          rangerName,
-          provider: 'supabase',
-          xp: remoteXp,
-          syncedToDb,
-          notice: 'Signed in with Supabase Cloud Profile ✓',
-        };
-        saveActiveAccount(account);
-        return account;
-      }
-    } catch {
-      // Fallback to /api/auth/login below
+    const { data, error } = await sb.rpc('login_player', {
+      p_email: email,
+      p_password: password,
+    });
+    if (!error && data) {
+      const row = data as { id: string; email: string; ranger_name: string; xp: number };
+      const account: AuthAccount = {
+        id: row.id,
+        email: row.email,
+        rangerName: row.ranger_name || 'Ranger',
+        provider: 'supabase_db',
+        xp: mergeProgressionXp(Number(row.xp) || 0),
+        syncedToDb: true,
+        notice: 'Signed in & synced from Supabase Database ✓',
+      };
+      saveActiveAccount(account);
+      return account;
+    }
+    if (error && !error.message.toLowerCase().includes('could not find the function')) {
+      throw new Error(error.message || 'Invalid email or password.');
     }
   }
 
-  if (typeof window !== 'undefined' && window.location.protocol.startsWith('http')) {
-    const res = await fetch('/api/auth/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password }),
-    });
-    const json = (await res.json()) as {
-      ok?: boolean;
-      error?: string;
-      account?: AuthAccount;
+  // 2. Full-Stack Express API fallback (safely skips GitHub Pages HTML 404s)
+  const apiRes = await fetchJsonSafe<{
+    ok?: boolean;
+    error?: string;
+    account?: AuthAccount;
+  }>('/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  });
+  if (apiRes.ok && apiRes.data?.account) {
+    const account: AuthAccount = {
+      ...apiRes.data.account,
+      xp: mergeProgressionXp(apiRes.data.account.xp),
+      notice: 'Signed in cleanly ✓',
     };
-    if (!res.ok || !json.account) {
-      throw new Error(json.error || 'Invalid email or password.');
-    }
-    const mergedXp = mergeProgressionXp(json.account.xp);
-    const account: AuthAccount = { ...json.account, xp: mergedXp };
     saveActiveAccount(account);
     return account;
   }
+  if (apiRes.status === 401 && apiRes.data?.error) {
+    throw new Error(apiRes.data.error);
+  }
 
-  throw new Error('Could not reach authentication server. Try Google Sign-In or check credentials.');
-}
+  // 3. Static Fallback (verify salted PBKDF2 hash locally)
+  const vault = loadLocalVault();
+  const localRec = vault[email];
+  if (!localRec) {
+    throw new Error('No account found for this email. Create a free account first.');
+  }
+  const { hashHex } = await hashPasswordPbkdf2(password, localRec.saltHex);
+  if (hashHex !== localRec.hashHex) {
+    throw new Error('Incorrect password.');
+  }
 
-export async function linkGoogleAccountToDb(user: User): Promise<AuthAccount> {
-  const email = (user.email || `${user.uid}@google.local`).toLowerCase();
-  const rangerName = (user.displayName || email.split('@')[0] || 'Ranger').slice(0, 28);
-  const localProg = loadProgression();
-
-  const synced = await upsertProfileToSupabaseAndServer({
-    id: `google-${user.uid}`,
-    email,
-    rangerName,
-    provider: 'google',
-    xp: localProg.xp,
-  });
-
-  const account: AuthAccount = {
-    id: `google-${user.uid}`,
-    email,
-    rangerName,
-    provider: 'google',
-    xp: localProg.xp,
-    syncedToDb: synced,
-    notice: 'Google Account & Sheets Feedback Linked ✓',
+  const localAccount: AuthAccount = {
+    id: localRec.id,
+    email: localRec.email,
+    rangerName: localRec.rangerName,
+    provider: 'local',
+    xp: mergeProgressionXp(localRec.xp),
+    syncedToDb: false,
+    notice: 'Signed in cleanly ✓',
   };
-  saveActiveAccount(account);
-  return account;
+  saveActiveAccount(localAccount);
+  return localAccount;
 }
 
 export async function syncCurrentAccountXp(xp: number): Promise<void> {
   const acc = loadActiveAccount();
   if (!acc) return;
-  const updated: AuthAccount = { ...acc, xp: Math.max(acc.xp, xp) };
+  const prog = loadProgression();
+  const nextXp = Math.max(acc.xp, xp);
+  const updated: AuthAccount = { ...acc, xp: nextXp };
   saveActiveAccount(updated);
-  await upsertProfileToSupabaseAndServer({
-    id: updated.id,
-    email: updated.email,
-    rangerName: updated.rangerName,
-    provider: updated.provider,
-    xp: updated.xp,
+
+  const vault = loadLocalVault();
+  if (vault[acc.email]) {
+    vault[acc.email].xp = Math.max(vault[acc.email].xp, nextXp);
+    saveLocalVault(vault);
+  }
+
+  const sb = getSupabaseClient();
+  if (sb && isSupabaseConfigured && acc.provider === 'supabase_db') {
+    await sb
+      .rpc('sync_player_xp', {
+        p_id: acc.id,
+        p_email: acc.email,
+        p_xp: nextXp,
+        p_skins: prog.equippedSkins ?? {},
+      })
+      .then(() => {});
+  }
+
+  await fetchJsonSafe('/api/profiles', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      id: acc.id,
+      email: acc.email,
+      rangerName: acc.rangerName,
+      provider: acc.provider,
+      xp: nextXp,
+      equippedSkins: prog.equippedSkins ?? {},
+    }),
   });
 }
 
 export async function signOutAccount(): Promise<void> {
   saveActiveAccount(null);
-  const sb = getSupabaseClient();
-  if (sb && isSupabaseConfigured) {
-    await sb.auth.signOut().catch(() => {});
-  }
-  await signOutGoogle().catch(() => {});
 }

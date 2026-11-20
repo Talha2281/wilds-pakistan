@@ -34,6 +34,11 @@ jobs:
         run: npm test
 
       - name: Build static web export
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL || vars.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY || vars.VITE_SUPABASE_ANON_KEY }}
+          VITE_FEEDBACK_SHEET_ID: ${{ secrets.VITE_FEEDBACK_SHEET_ID || vars.VITE_FEEDBACK_SHEET_ID }}
+          VITE_SHEETS_WEBHOOK_URL: ${{ secrets.VITE_SHEETS_WEBHOOK_URL || vars.VITE_SHEETS_WEBHOOK_URL }}
         run: npm run build
         env:
           VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}

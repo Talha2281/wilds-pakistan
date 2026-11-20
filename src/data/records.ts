@@ -1,4 +1,5 @@
 import { AnimalId, BiomeId, GameMode, PlayerRecord } from '../types/game';
+import { fetchJsonSafe } from './auth';
 import { getCurrentWeekKey, getTodayDateKey } from './dailyExpedition';
 import { getSupabaseClient, isSupabaseConfigured } from './supabaseClient';
 
@@ -117,7 +118,9 @@ export interface SupabaseStatusResult {
   note: string;
 }
 
-export const LEADERBOARD_SCHEMA_SQL = `-- Run in Supabase SQL Editor to enable Leaderboard, Accounts & Feedback persistence
+export const LEADERBOARD_SCHEMA_SQL = `-- Run in Supabase SQL Editor to enable Leaderboard, Secure Accounts (zero confirmation emails) & Feedback
+create extension if not exists pgcrypto with schema extensions;
+
 create table if not exists public.leaderboard_entries (
   id text primary key,
   player_name text not null,
@@ -144,21 +147,36 @@ create index if not exists idx_leaderboard_week on public.leaderboard_entries (w
 
 alter table public.leaderboard_entries enable row level security;
 
+drop policy if exists "Anyone can read leaderboard" on public.leaderboard_entries;
 create policy "Anyone can read leaderboard"
   on public.leaderboard_entries
   for select
   using (true);
 
+drop policy if exists "Anyone can submit leaderboard score" on public.leaderboard_entries;
 create policy "Anyone can submit leaderboard score"
   on public.leaderboard_entries
   for insert
   with check (score >= 0 and char_length(player_name) <= 32);
 
+create table if not exists public.player_accounts (
+  id text primary key,
+  email text unique not null,
+  ranger_name text not null,
+  password_hash text not null,
+  xp integer not null default 0,
+  equipped_skins jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table public.player_accounts enable row level security;
+
 create table if not exists public.player_profiles (
   id text primary key,
   email text unique not null,
   ranger_name text not null,
-  auth_provider text not null default 'supabase',
+  auth_provider text not null default 'supabase_db',
   xp integer not null default 0,
   equipped_skins jsonb not null default '{}'::jsonb,
   favorite_biome text default 'northern_mountains',
@@ -168,9 +186,93 @@ create table if not exists public.player_profiles (
 
 create index if not exists idx_player_profiles_email on public.player_profiles (email);
 alter table public.player_profiles enable row level security;
+drop policy if exists "Anyone can read ranger profiles" on public.player_profiles;
 create policy "Anyone can read ranger profiles" on public.player_profiles for select using (true);
+drop policy if exists "Players can insert own profile" on public.player_profiles;
 create policy "Players can insert own profile" on public.player_profiles for insert with check (char_length(ranger_name) <= 36 and xp >= 0);
+drop policy if exists "Players can update profile" on public.player_profiles;
 create policy "Players can update profile" on public.player_profiles for update using (true) with check (char_length(ranger_name) <= 36 and xp >= 0);
+
+create or replace function public.register_player(
+  p_email text,
+  p_password text,
+  p_ranger_name text,
+  p_xp integer default 0
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_email text := lower(trim(coalesce(p_email, '')));
+  v_name text := left(trim(coalesce(p_ranger_name, '')), 28);
+  v_id text := 'acc-' || gen_random_uuid()::text;
+  v_hash text;
+  v_xp integer := greatest(0, coalesce(p_xp, 0));
+begin
+  if v_email !~ '^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$' then
+    raise exception 'Please enter a valid email address.';
+  end if;
+  if length(coalesce(p_password, '')) < 6 then
+    raise exception 'Password must be at least 6 characters.';
+  end if;
+  if length(v_name) < 2 then
+    v_name := left(split_part(v_email, '@', 1), 28);
+  end if;
+  if exists (select 1 from public.player_accounts where email = v_email) then
+    raise exception 'An account with this email already exists. Please log in.';
+  end if;
+  v_hash := crypt(p_password, gen_salt('bf', 10));
+  insert into public.player_accounts (id, email, ranger_name, password_hash, xp)
+  values (v_id, v_email, v_name, v_hash, v_xp);
+  insert into public.player_profiles (id, email, ranger_name, auth_provider, xp)
+  values (v_id, v_email, v_name, 'supabase_db', v_xp)
+  on conflict (id) do update
+    set ranger_name = excluded.ranger_name,
+        xp = greatest(public.player_profiles.xp, excluded.xp),
+        updated_at = now();
+  return jsonb_build_object('id', v_id, 'email', v_email, 'ranger_name', v_name, 'xp', v_xp, 'equipped_skins', '{}'::jsonb);
+end;
+$$;
+
+create or replace function public.login_player(p_email text, p_password text)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_email text := lower(trim(coalesce(p_email, '')));
+  v_row public.player_accounts%rowtype;
+begin
+  select * into v_row from public.player_accounts where email = v_email limit 1;
+  if not found or v_row.password_hash <> crypt(coalesce(p_password, ''), v_row.password_hash) then
+    raise exception 'Invalid email or password.';
+  end if;
+  return jsonb_build_object('id', v_row.id, 'email', v_row.email, 'ranger_name', v_row.ranger_name, 'xp', v_row.xp, 'equipped_skins', v_row.equipped_skins);
+end;
+$$;
+
+create or replace function public.sync_player_xp(p_id text, p_email text, p_xp integer, p_skins jsonb default '{}'::jsonb)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  update public.player_accounts
+  set xp = greatest(xp, greatest(0, coalesce(p_xp, 0))), equipped_skins = coalesce(p_skins, equipped_skins), updated_at = now()
+  where id = p_id and email = lower(trim(coalesce(p_email, '')));
+  update public.player_profiles
+  set xp = greatest(xp, greatest(0, coalesce(p_xp, 0))), equipped_skins = coalesce(p_skins, equipped_skins), updated_at = now()
+  where id = p_id;
+end;
+$$;
+
+grant execute on function public.register_player(text, text, text, integer) to anon, authenticated;
+grant execute on function public.login_player(text, text) to anon, authenticated;
+grant execute on function public.sync_player_xp(text, text, integer, jsonb) to anon, authenticated;
 
 create table if not exists public.player_feedback (
   id text primary key,
@@ -192,7 +294,9 @@ create table if not exists public.player_feedback (
 
 create index if not exists idx_player_feedback_created on public.player_feedback (created_at desc);
 alter table public.player_feedback enable row level security;
+drop policy if exists "Anyone can read feedback summaries" on public.player_feedback;
 create policy "Anyone can read feedback summaries" on public.player_feedback for select using (true);
+drop policy if exists "Anyone can submit post-game feedback" on public.player_feedback;
 create policy "Anyone can submit post-game feedback" on public.player_feedback for insert with check (rating >= 1 and rating <= 5 and char_length(comment) <= 1200);`;
 
 export async function submitSharedRecord(record: PlayerRecord): Promise<SaveRecordResult> {
@@ -243,28 +347,21 @@ export async function submitSharedRecord(record: PlayerRecord): Promise<SaveReco
   }
 
   // Also post to Express /api/leaderboard if running on full-stack server
-  if (typeof window !== 'undefined' && window.location.protocol.startsWith('http')) {
-    try {
-      const res = await fetch('/api/leaderboard', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(enriched),
-      });
-      if (res.ok) {
-        savedToServer = true;
-        const json = (await res.json()) as {
-          syncedSupabase?: boolean;
-          supabaseNote?: string;
-        };
-        if (json.syncedSupabase) {
-          savedToSupabase = true;
-          note = undefined;
-        } else if (json.supabaseNote) {
-          note = json.supabaseNote;
-        }
-      }
-    } catch {
-      // Static GitHub Pages has no /api route; ignore cleanly
+  const apiRes = await fetchJsonSafe<{
+    syncedSupabase?: boolean;
+    supabaseNote?: string;
+  }>('/api/leaderboard', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(enriched),
+  });
+  if (apiRes.ok && apiRes.data) {
+    savedToServer = true;
+    if (apiRes.data.syncedSupabase) {
+      savedToSupabase = true;
+      note = undefined;
+    } else if (apiRes.data.supabaseNote) {
+      note = apiRes.data.supabaseNote;
     }
   }
 
@@ -272,19 +369,14 @@ export async function submitSharedRecord(record: PlayerRecord): Promise<SaveReco
 }
 
 export async function verifyAndSyncSupabase(): Promise<SupabaseStatusResult> {
-  if (typeof window !== 'undefined' && window.location.protocol.startsWith('http')) {
-    try {
-      const res = await fetch('/api/supabase/verify', { method: 'POST' });
-      if (res.ok) {
-        const json = (await res.json()) as SupabaseStatusResult;
-        return {
-          ...json,
-          schemaSql: json.schemaSql ?? LEADERBOARD_SCHEMA_SQL,
-        };
-      }
-    } catch {
-      // Fall through to browser-side Supabase check
-    }
+  const serverRes = await fetchJsonSafe<SupabaseStatusResult>('/api/supabase/verify', {
+    method: 'POST',
+  });
+  if (serverRes.ok && serverRes.data) {
+    return {
+      ...serverRes.data,
+      schemaSql: serverRes.data.schemaSql ?? LEADERBOARD_SCHEMA_SQL,
+    };
   }
 
   const sb = getSupabaseClient();
@@ -379,33 +471,24 @@ export async function fetchSharedLeaderboard(
     }
   }
 
-  if (typeof window !== 'undefined' && window.location.protocol.startsWith('http')) {
-    try {
-      const qs = new URLSearchParams({
-        scope,
-        mode: modeFilter,
-        limit: String(limit),
-        dailyDate: today,
-        weekKey: week,
-      });
-      const res = await fetch(`/api/leaderboard?${qs.toString()}`);
-      if (res.ok) {
-        const json = (await res.json()) as {
-          records?: PlayerRecord[];
-          source?: 'supabase' | 'server';
-          supabaseNote?: string;
-        };
-        if (Array.isArray(json.records)) {
-          return {
-            records: json.records,
-            source: json.source === 'supabase' ? 'supabase' : 'server',
-            supabaseNote: json.supabaseNote,
-          };
-        }
-      }
-    } catch {
-      // Fall through to local records
-    }
+  const qs = new URLSearchParams({
+    scope,
+    mode: modeFilter,
+    limit: String(limit),
+    dailyDate: today,
+    weekKey: week,
+  });
+  const apiRes = await fetchJsonSafe<{
+    records?: PlayerRecord[];
+    source?: 'supabase' | 'server';
+    supabaseNote?: string;
+  }>(`/api/leaderboard?${qs.toString()}`);
+  if (apiRes.ok && apiRes.data && Array.isArray(apiRes.data.records)) {
+    return {
+      records: apiRes.data.records,
+      source: apiRes.data.source === 'supabase' ? 'supabase' : 'server',
+      supabaseNote: apiRes.data.supabaseNote,
+    };
   }
 
   return {

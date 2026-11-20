@@ -1,10 +1,4 @@
-import {
-  FeedbackSheetRow,
-  SavedFeedbackSheetMeta,
-  appendFeedbackToGoogleSheet,
-  getGoogleAccessToken,
-  loadSavedFeedbackSheet,
-} from './googleAuthSheets';
+import { fetchJsonSafe } from './auth';
 import { getSupabaseClient, isSupabaseConfigured } from './supabaseClient';
 import { AnimalId, BiomeId, GameMode } from '../types/game';
 
@@ -49,7 +43,6 @@ export interface SubmitFeedbackResult {
   savedToSupabase: boolean;
   savedToServer: boolean;
   savedToGoogleSheet: boolean;
-  spreadsheetUrl?: string;
   note?: string;
 }
 
@@ -106,68 +99,45 @@ function saveLocalFeedback(entry: PlayerFeedbackEntry): void {
 
 export async function submitPlayerFeedback(
   entry: PlayerFeedbackEntry,
-  options?: { sheetMeta?: SavedFeedbackSheetMeta | null },
 ): Promise<SubmitFeedbackResult> {
   let savedToSupabase = false;
   let savedToServer = false;
   let savedToGoogleSheet = false;
-  let spreadsheetUrl: string | undefined;
-  let note: string | undefined;
 
-  const targetSheet = options?.sheetMeta ?? loadSavedFeedbackSheet();
-  const accessToken = getGoogleAccessToken();
-
-  // 1. Direct Authorized Google Sheets API Append (when user signed in with Google + selected a Sheet)
-  if (targetSheet && accessToken) {
-    try {
-      const sheetRow: FeedbackSheetRow = {
-        createdAtIso: entry.createdAtIso,
-        playerName: entry.playerName,
-        userEmail: entry.userEmail,
-        rating: entry.rating,
-        category: entry.category,
-        mode: entry.mode,
-        animalId: entry.animalId,
-        biomeId: entry.biomeId,
-        round: entry.round,
-        score: entry.score,
-        victory: entry.victory,
-        comment: entry.comment,
-      };
-      const sheetRes = await appendFeedbackToGoogleSheet(sheetRow, targetSheet, accessToken);
-      savedToGoogleSheet = true;
-      spreadsheetUrl = sheetRes.spreadsheetUrl;
-    } catch (err) {
-      note = err instanceof Error ? err.message : 'Google Sheets sync skipped.';
-    }
-  }
-
-  // Optional Apps Script Webhook fallback if configured
-  const webhookUrl =
+  const envWebhook =
     typeof import.meta !== 'undefined' && import.meta.env
       ? String(import.meta.env.VITE_SHEETS_WEBHOOK_URL || '').trim()
       : '';
-  if (!savedToGoogleSheet && webhookUrl) {
+  const envSheetId =
+    typeof import.meta !== 'undefined' && import.meta.env
+      ? String(import.meta.env.VITE_FEEDBACK_SHEET_ID || '').trim()
+      : '';
+
+  // 1. Direct Google Apps Script Webhook (works from both static GitHub Pages & local dev without OAuth popups!)
+  if (envWebhook) {
     try {
-      const whRes = await fetch(webhookUrl, {
+      // Apps Script Web Apps accept text/plain POST cleanly without triggering CORS preflight rejection
+      const whRes = await fetch(envWebhook, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify(entry),
       });
-      if (whRes.ok) savedToGoogleSheet = true;
+      if (whRes.ok || whRes.type === 'opaque') {
+        savedToGoogleSheet = true;
+      }
     } catch {
-      // ignore webhook error
+      // Try Express server webhook below if available
     }
   }
 
   const enriched: PlayerFeedbackEntry = {
     ...entry,
     sheetSynced: savedToGoogleSheet,
-    spreadsheetId: targetSheet?.spreadsheetId,
+    spreadsheetId: envSheetId || undefined,
   };
   saveLocalFeedback(enriched);
 
-  // 2. Supabase free database backup (public.player_feedback)
+  // 2. Supabase database persistence (public.player_feedback)
   const sb = getSupabaseClient();
   if (sb && isSupabaseConfigured) {
     try {
@@ -196,33 +166,24 @@ export async function submitPlayerFeedback(
     }
   }
 
-  // 3. Express backend persistence (/api/feedback -> server + Supabase + server webhook)
-  if (typeof window !== 'undefined' && window.location.protocol.startsWith('http')) {
-    try {
-      const res = await fetch('/api/feedback', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(enriched),
-      });
-      if (res.ok) {
-        savedToServer = true;
-        const json = (await res.json()) as {
-          syncedSupabase?: boolean;
-          syncedSheetWebhook?: boolean;
-        };
-        if (json.syncedSupabase) savedToSupabase = true;
-        if (json.syncedSheetWebhook) savedToGoogleSheet = true;
-      }
-    } catch {
-      // static GitHub Pages fallback
-    }
+  // 3. Express backend fallback (safely skips static GitHub Pages 404 HTML)
+  const apiRes = await fetchJsonSafe<{
+    syncedSupabase?: boolean;
+    syncedSheetWebhook?: boolean;
+  }>('/api/feedback', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(enriched),
+  });
+  if (apiRes.ok && apiRes.data) {
+    savedToServer = true;
+    if (apiRes.data.syncedSupabase) savedToSupabase = true;
+    if (apiRes.data.syncedSheetWebhook) savedToGoogleSheet = true;
   }
 
   return {
     savedToSupabase,
     savedToServer,
     savedToGoogleSheet,
-    spreadsheetUrl,
-    note,
   };
 }

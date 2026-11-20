@@ -555,8 +555,21 @@ function runSmokeTests() {
   const llmsTxt = fs.readFileSync(path.join(rootDir, 'public/llms.txt'), 'utf8');
   assert.ok(llmsTxt.includes('Rarity') && llmsTxt.includes('Ranger Toolkit'), 'public/llms.txt must document Photo Safari Rarity & Ranger Toolkit for AEO/GEO');
 
+  const schemaSql = fs.readFileSync(path.join(rootDir, 'supabase/schema.sql'), 'utf8');
+  assert.ok(
+    schemaSql.includes('register_player') && schemaSql.includes('login_player') && schemaSql.includes('player_accounts'),
+    'supabase/schema.sql must define pgcrypto bcrypt account tables & RPCs',
+  );
+  const authSrc = fs.readFileSync(path.join(rootDir, 'src/data/auth.ts'), 'utf8');
+  assert.ok(authSrc.includes('fetchJsonSafe'), 'src/data/auth.ts must guard /api fetches with fetchJsonSafe');
+  const appSrc = fs.readFileSync(path.join(rootDir, 'src/App.tsx'), 'utf8');
+  assert.ok(
+    appSrc.includes('allowClose={false}') && appSrc.includes('requestNavigateToGame'),
+    'src/App.tsx must enforce Login Gate before entering Wilderness or /game/',
+  );
+
   console.log(
-    'ALL SMOKE TESTS PASSED: expanded scale (>=350m), unique spawns, 1-2 min timed rounds, non-overlapping animal/ranger/coop separation, dynamic audio env metrics, Ranger Toolkit (Binoculars/Camera/Dart), Photo Safari Rarity x Quality scoring & Field Challenges, Markhor horn-counter, lethal Shikari gunfire, seasonal migration, carried XP growth tiers, Daily Expedition, Conservation endings, Dolphin breach/dive, Ranger patrol, Feedback & SEO/AEO/GEO checks',
+    'ALL SMOKE TESTS PASSED: expanded scale (>=350m), unique spawns, 1-2 min timed rounds, non-overlapping animal/ranger/coop separation, dynamic audio env metrics, Ranger Toolkit (Binoculars/Camera/Dart), Photo Safari Rarity x Quality scoring & Field Challenges, Markhor horn-counter, lethal Shikari gunfire, seasonal migration, carried XP growth tiers, Daily Expedition, Conservation endings, Dolphin breach/dive, Ranger patrol, Feedback, Auth Login Gate & SEO/AEO/GEO checks',
   );
 }
 

@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
+import { AuthModal } from './components/AuthModal';
 import { OfflineIndicator } from './components/OfflineIndicator';
+import { AuthAccount, loadActiveAccount } from './data/auth';
 import { useLanguage } from './data/i18n';
 import { GamePage } from './pages/GamePage';
 import { LandingPage } from './pages/LandingPage';
@@ -35,6 +37,14 @@ export default function App() {
   const [presetMode, setPresetMode] = useState<GameMode>(() => getInitialPresetMode());
   const [presetDaily, setPresetDaily] = useState<boolean>(() => getInitialDailyFlag());
 
+  const [account, setAccount] = useState<AuthAccount | null>(() => loadActiveAccount());
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [authPrompt, setAuthPrompt] = useState('');
+  const [pendingNav, setPendingNav] = useState<{
+    mode?: GameMode;
+    opts?: { daily?: boolean };
+  } | null>(null);
+
   useEffect(() => {
     const onPop = () => {
       setOnGame(isGameRoute(window.location.pathname));
@@ -45,7 +55,7 @@ export default function App() {
     return () => window.removeEventListener('popstate', onPop);
   }, []);
 
-  const navigateToGame = (mode?: GameMode, opts?: { daily?: boolean }) => {
+  const performNavigateToGame = (mode?: GameMode, opts?: { daily?: boolean }) => {
     const chosenMode = mode ?? 'wild_life';
     const isDaily = Boolean(opts?.daily);
     setPresetMode(chosenMode);
@@ -63,24 +73,90 @@ export default function App() {
     window.scrollTo(0, 0);
   };
 
+  const requestNavigateToGame = (mode?: GameMode, opts?: { daily?: boolean }) => {
+    if (!account) {
+      setPendingNav({ mode, opts });
+      setAuthPrompt(
+        'Please sign in or create your free Ranger account to enter the wilderness and save your XP.',
+      );
+      setShowAuthModal(true);
+      return;
+    }
+    performNavigateToGame(mode, opts);
+  };
+
   const navigateToHome = () => {
     const homeUrl = window.location.pathname.replace(/\/game\/?(index\.html)?$/i, '/');
     window.history.pushState({}, '', homeUrl || '/');
     setOnGame(false);
+    setPendingNav(null);
     window.scrollTo(0, 0);
+  };
+
+  const handleAuthChange = (next: AuthAccount | null) => {
+    setAccount(next);
+    if (next) {
+      setShowAuthModal(false);
+      setAuthPrompt('');
+      if (pendingNav) {
+        const target = pendingNav;
+        setPendingNav(null);
+        performNavigateToGame(target.mode, target.opts);
+      }
+    }
+  };
+
+  const openAuthModal = () => {
+    setPendingNav(null);
+    setAuthPrompt('');
+    setShowAuthModal(true);
   };
 
   return (
     <>
       {onGame ? (
-        <GamePage
-          initialMode={presetMode}
-          initialDaily={presetDaily}
-          onNavigateHome={navigateToHome}
-        />
+        account ? (
+          <GamePage
+            account={account}
+            onOpenAuth={openAuthModal}
+            initialMode={presetMode}
+            initialDaily={presetDaily}
+            onNavigateHome={navigateToHome}
+          />
+        ) : (
+          <div className="min-h-screen bg-slate-950 text-slate-100">
+            <AuthModal
+              account={null}
+              allowClose={false}
+              promptMessage="Authentication required: please sign in or create a free Ranger account before entering the wilderness."
+              onNavigateHome={navigateToHome}
+              onAuthChange={handleAuthChange}
+              onClose={() => {}}
+            />
+          </div>
+        )
       ) : (
-        <LandingPage onNavigateGame={navigateToGame} />
+        <LandingPage
+          account={account}
+          onOpenAuth={openAuthModal}
+          onNavigateGame={requestNavigateToGame}
+        />
       )}
+
+      {showAuthModal && !(onGame && !account) && (
+        <AuthModal
+          account={account}
+          promptMessage={authPrompt || undefined}
+          allowClose
+          onAuthChange={handleAuthChange}
+          onClose={() => {
+            setShowAuthModal(false);
+            setPendingNav(null);
+            setAuthPrompt('');
+          }}
+        />
+      )}
+
       <OfflineIndicator lang={lang} />
     </>
   );

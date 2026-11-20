@@ -24,15 +24,13 @@ import {
   UserCheck,
   UserCircle2,
 } from 'lucide-react';
-import { AuthModal } from '../components/AuthModal';
 import { FeedbackModal } from '../components/FeedbackModal';
 import { LandingFlythrough } from '../components/LandingFlythrough';
 import { MarkhorHillsLogo } from '../components/MarkhorHillsLogo';
 import { PhotoAlbumModal } from '../components/PhotoAlbumModal';
 import { PWAInstallButton } from '../components/PWAInstallButton';
 import { ANIMALS, PLAYABLE_WILDLIFE } from '../data/animals';
-import { AuthAccount, loadActiveAccount } from '../data/auth';
-import { subscribeGoogleAuth } from '../data/googleAuthSheets';
+import { AuthAccount, fetchJsonSafe } from '../data/auth';
 import { BIOMES, BIOME_LIST } from '../data/biomes';
 import { loadConservationMap } from '../data/conservation';
 import {
@@ -58,6 +56,8 @@ import {
 import { BiomeId, GameMode, PlayerRecord, SavedPhotoEntry } from '../types/game';
 
 interface LandingPageProps {
+  account: AuthAccount | null;
+  onOpenAuth: () => void;
   onNavigateGame: (presetMode?: GameMode, opts?: { daily?: boolean }) => void;
 }
 
@@ -88,11 +88,11 @@ export const LANDING_FAQS = [
   },
   {
     q: 'Can I create a free account and submit game feedback?',
-    a: 'Yes! Sign up free with Email & Password or Sign in with Google to sync your XP and unlocks across sessions, and submit post-game ratings and comments saved directly to Supabase and Google Sheets.',
+    a: 'Yes! Create a free Ranger account with Email & Password (zero confirmation emails) to unlock gameplay, sync your XP and wildlife unlocks in Supabase PostgreSQL, and submit post-game ratings and comments backed up to Supabase and Google Sheets.',
   },
 ];
 
-export function LandingPage({ onNavigateGame }: LandingPageProps) {
+export function LandingPage({ account, onOpenAuth, onNavigateGame }: LandingPageProps) {
   const [lang, setLang] = useLanguage();
   const t = COPY[lang];
 
@@ -109,9 +109,7 @@ export function LandingPage({ onNavigateGame }: LandingPageProps) {
   const [copiedSql, setCopiedSql] = useState(false);
   const [openFaq, setOpenFaq] = useState<number | null>(0);
   const [showAlbum, setShowAlbum] = useState(false);
-  const [showAuthModal, setShowAuthModal] = useState(false);
   const [showFeedbackModal, setShowFeedbackModal] = useState(false);
-  const [account, setAccount] = useState<AuthAccount | null>(() => loadActiveAccount());
   const [savedPhotos, setSavedPhotos] = useState<SavedPhotoEntry[]>(() => loadSavedPhotos());
   const [inviteCopied, setInviteCopied] = useState(false);
 
@@ -137,10 +135,6 @@ export function LandingPage({ onNavigateGame }: LandingPageProps) {
       // Ignore restricted clipboard
     }
   };
-
-  useEffect(() => {
-    return subscribeGoogleAuth(() => {});
-  }, []);
 
   const daily = useMemo(() => getDailyExpedition(), []);
   const speciesOfDay = useMemo(() => getSpeciesOfTheDay(), []);
@@ -176,30 +170,22 @@ export function LandingPage({ onNavigateGame }: LandingPageProps) {
 
   useEffect(() => {
     let active = true;
-    if (typeof window !== 'undefined' && window.location.protocol.startsWith('http')) {
-      fetch('/api/health')
-        .then((r) => (r.ok ? r.json() : null))
-        .then(
-          (
-            health: {
-              records?: number;
-              supabase?: { configured: boolean; connected: boolean; note: string };
-            } | null,
-          ) => {
-            if (!active || !health?.supabase) return;
-            setSbStatus({
-              configured: health.supabase.configured,
-              connected: health.supabase.connected,
-              tableReady: health.supabase.connected,
-              syncedCount: 0,
-              totalServerRecords: health.records,
-              schemaSql: LEADERBOARD_SCHEMA_SQL,
-              note: health.supabase.note,
-            });
-          },
-        )
-        .catch(() => {});
-    }
+    fetchJsonSafe<{
+      records?: number;
+      supabase?: { configured: boolean; connected: boolean; note: string };
+    }>('/api/health').then((res) => {
+      if (!active || !res.ok || !res.data?.supabase) return;
+      const health = res.data;
+      setSbStatus({
+        configured: health.supabase!.configured,
+        connected: health.supabase!.connected,
+        tableReady: health.supabase!.connected,
+        syncedCount: 0,
+        totalServerRecords: health.records,
+        schemaSql: LEADERBOARD_SCHEMA_SQL,
+        note: health.supabase!.note,
+      });
+    });
     return () => {
       active = false;
     };
@@ -292,41 +278,39 @@ export function LandingPage({ onNavigateGame }: LandingPageProps) {
               </span>
             </button>
 
-            <button
-              type="button"
-              onClick={() => setShowAuthModal(true)}
-              className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-semibold ${
-                account
-                  ? 'border-emerald-400/45 bg-emerald-500/15 text-emerald-200 hover:bg-emerald-500/25'
-                  : 'border-white/20 bg-slate-900/90 text-slate-100 hover:border-emerald-400/50'
-              }`}
-            >
-              {account ? (
-                <>
-                  <UserCheck className="h-3.5 w-3.5 text-emerald-300" />
-                  <span>{account.rangerName}</span>
-                </>
-              ) : (
-                <>
-                  <UserCircle2 className="h-3.5 w-3.5 text-emerald-300" />
-                  <span>Login / Sign Up</span>
-                </>
-              )}
-            </button>
-
             <PWAInstallButton lang={lang} />
 
-            <a
-              href="./game/"
-              onClick={(e) => {
-                e.preventDefault();
-                onNavigateGame();
-              }}
-              className="inline-flex items-center gap-2 rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-bold text-slate-950 shadow-lg transition-transform hover:scale-[1.02] hover:bg-emerald-400"
-            >
-              <Play className="h-4 w-4 fill-current" />
-              {t.playFree}
-            </a>
+            {/* Combined Account & Play Free Bar */}
+            <div className="inline-flex items-center overflow-hidden rounded-xl border border-emerald-400/45 bg-slate-900/95 shadow-lg">
+              <button
+                type="button"
+                onClick={onOpenAuth}
+                className="inline-flex items-center gap-1.5 px-3 py-2.5 text-xs font-semibold text-slate-100 hover:bg-slate-800"
+              >
+                {account ? (
+                  <>
+                    <UserCheck className="h-3.5 w-3.5 text-emerald-300" />
+                    <span className="max-w-[110px] truncate">{account.rangerName}</span>
+                  </>
+                ) : (
+                  <>
+                    <UserCircle2 className="h-3.5 w-3.5 text-emerald-300" />
+                    <span>Login / Save Info</span>
+                  </>
+                )}
+              </button>
+              <a
+                href="./game/"
+                onClick={(e) => {
+                  e.preventDefault();
+                  onNavigateGame();
+                }}
+                className="inline-flex items-center gap-1.5 bg-emerald-500 px-4 py-2.5 text-sm font-bold text-slate-950 transition-colors hover:bg-emerald-400"
+              >
+                <Play className="h-4 w-4 fill-current" />
+                {t.playFree}
+              </a>
+            </div>
           </div>
         </header>
 
@@ -1048,13 +1032,6 @@ export function LandingPage({ onNavigateGame }: LandingPageProps) {
           onClose={() => setShowAlbum(false)}
         />
       )}
-      {showAuthModal && (
-        <AuthModal
-          account={account}
-          onAuthChange={setAccount}
-          onClose={() => setShowAuthModal(false)}
-        />
-      )}
       {showFeedbackModal && (
         <FeedbackModal
           playerName={account?.rangerName || 'Explorer'}
@@ -1065,7 +1042,6 @@ export function LandingPage({ onNavigateGame }: LandingPageProps) {
           round={1}
           score={0}
           victory={true}
-          onAuthChange={setAccount}
           onClose={() => setShowFeedbackModal(false)}
         />
       )}

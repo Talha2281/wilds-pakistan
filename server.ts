@@ -106,7 +106,7 @@ interface ServerAccountRecord {
   id: string;
   email: string;
   rangerName: string;
-  provider: 'supabase' | 'google' | 'server';
+  provider: 'supabase_db' | 'server';
   passwordHash?: string;
   salt?: string;
   xp: number;
@@ -233,7 +233,9 @@ async function fetchSupabaseRecords(params: {
   }
 }
 
-const LEADERBOARD_SCHEMA_SQL = `-- Run in Supabase SQL Editor to enable Leaderboard, Accounts & Feedback persistence
+const LEADERBOARD_SCHEMA_SQL = `-- Run in Supabase SQL Editor to enable Leaderboard, Secure Accounts (zero confirmation emails) & Feedback
+create extension if not exists pgcrypto with schema extensions;
+
 create table if not exists public.leaderboard_entries (
   id text primary key,
   player_name text not null,
@@ -260,21 +262,36 @@ create index if not exists idx_leaderboard_week on public.leaderboard_entries (w
 
 alter table public.leaderboard_entries enable row level security;
 
+drop policy if exists "Anyone can read leaderboard" on public.leaderboard_entries;
 create policy "Anyone can read leaderboard"
   on public.leaderboard_entries
   for select
   using (true);
 
+drop policy if exists "Anyone can submit leaderboard score" on public.leaderboard_entries;
 create policy "Anyone can submit leaderboard score"
   on public.leaderboard_entries
   for insert
   with check (score >= 0 and char_length(player_name) <= 32);
 
+create table if not exists public.player_accounts (
+  id text primary key,
+  email text unique not null,
+  ranger_name text not null,
+  password_hash text not null,
+  xp integer not null default 0,
+  equipped_skins jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table public.player_accounts enable row level security;
+
 create table if not exists public.player_profiles (
   id text primary key,
   email text unique not null,
   ranger_name text not null,
-  auth_provider text not null default 'supabase',
+  auth_provider text not null default 'supabase_db',
   xp integer not null default 0,
   equipped_skins jsonb not null default '{}'::jsonb,
   favorite_biome text default 'northern_mountains',
@@ -284,9 +301,93 @@ create table if not exists public.player_profiles (
 
 create index if not exists idx_player_profiles_email on public.player_profiles (email);
 alter table public.player_profiles enable row level security;
+drop policy if exists "Anyone can read ranger profiles" on public.player_profiles;
 create policy "Anyone can read ranger profiles" on public.player_profiles for select using (true);
+drop policy if exists "Players can insert own profile" on public.player_profiles;
 create policy "Players can insert own profile" on public.player_profiles for insert with check (char_length(ranger_name) <= 36 and xp >= 0);
+drop policy if exists "Players can update profile" on public.player_profiles;
 create policy "Players can update profile" on public.player_profiles for update using (true) with check (char_length(ranger_name) <= 36 and xp >= 0);
+
+create or replace function public.register_player(
+  p_email text,
+  p_password text,
+  p_ranger_name text,
+  p_xp integer default 0
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_email text := lower(trim(coalesce(p_email, '')));
+  v_name text := left(trim(coalesce(p_ranger_name, '')), 28);
+  v_id text := 'acc-' || gen_random_uuid()::text;
+  v_hash text;
+  v_xp integer := greatest(0, coalesce(p_xp, 0));
+begin
+  if v_email !~ '^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$' then
+    raise exception 'Please enter a valid email address.';
+  end if;
+  if length(coalesce(p_password, '')) < 6 then
+    raise exception 'Password must be at least 6 characters.';
+  end if;
+  if length(v_name) < 2 then
+    v_name := left(split_part(v_email, '@', 1), 28);
+  end if;
+  if exists (select 1 from public.player_accounts where email = v_email) then
+    raise exception 'An account with this email already exists. Please log in.';
+  end if;
+  v_hash := crypt(p_password, gen_salt('bf', 10));
+  insert into public.player_accounts (id, email, ranger_name, password_hash, xp)
+  values (v_id, v_email, v_name, v_hash, v_xp);
+  insert into public.player_profiles (id, email, ranger_name, auth_provider, xp)
+  values (v_id, v_email, v_name, 'supabase_db', v_xp)
+  on conflict (id) do update
+    set ranger_name = excluded.ranger_name,
+        xp = greatest(public.player_profiles.xp, excluded.xp),
+        updated_at = now();
+  return jsonb_build_object('id', v_id, 'email', v_email, 'ranger_name', v_name, 'xp', v_xp, 'equipped_skins', '{}'::jsonb);
+end;
+$$;
+
+create or replace function public.login_player(p_email text, p_password text)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_email text := lower(trim(coalesce(p_email, '')));
+  v_row public.player_accounts%rowtype;
+begin
+  select * into v_row from public.player_accounts where email = v_email limit 1;
+  if not found or v_row.password_hash <> crypt(coalesce(p_password, ''), v_row.password_hash) then
+    raise exception 'Invalid email or password.';
+  end if;
+  return jsonb_build_object('id', v_row.id, 'email', v_row.email, 'ranger_name', v_row.ranger_name, 'xp', v_row.xp, 'equipped_skins', v_row.equipped_skins);
+end;
+$$;
+
+create or replace function public.sync_player_xp(p_id text, p_email text, p_xp integer, p_skins jsonb default '{}'::jsonb)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  update public.player_accounts
+  set xp = greatest(xp, greatest(0, coalesce(p_xp, 0))), equipped_skins = coalesce(p_skins, equipped_skins), updated_at = now()
+  where id = p_id and email = lower(trim(coalesce(p_email, '')));
+  update public.player_profiles
+  set xp = greatest(xp, greatest(0, coalesce(p_xp, 0))), equipped_skins = coalesce(p_skins, equipped_skins), updated_at = now()
+  where id = p_id;
+end;
+$$;
+
+grant execute on function public.register_player(text, text, text, integer) to anon, authenticated;
+grant execute on function public.login_player(text, text) to anon, authenticated;
+grant execute on function public.sync_player_xp(text, text, integer, jsonb) to anon, authenticated;
 
 create table if not exists public.player_feedback (
   id text primary key,
@@ -308,7 +409,9 @@ create table if not exists public.player_feedback (
 
 create index if not exists idx_player_feedback_created on public.player_feedback (created_at desc);
 alter table public.player_feedback enable row level security;
+drop policy if exists "Anyone can read feedback summaries" on public.player_feedback;
 create policy "Anyone can read feedback summaries" on public.player_feedback for select using (true);
+drop policy if exists "Anyone can submit post-game feedback" on public.player_feedback;
 create policy "Anyone can submit post-game feedback" on public.player_feedback for insert with check (rating >= 1 and rating <= 5 and char_length(comment) <= 1200);`;
 
 async function upsertSupabaseRecord(
@@ -392,10 +495,11 @@ async function startServer() {
     let supabaseConnected = false;
     let profilesReady = false;
     let feedbackReady = false;
+    let accountsReady = false;
     let supabaseNote = cfg ? 'Ready' : 'Not configured';
     if (cfg) {
       try {
-        const [lbProbe, profProbe, fbProbe] = await Promise.all([
+        const [lbProbe, profProbe, fbProbe, accRpcProbe] = await Promise.all([
           fetch(`${cfg.url}/rest/v1/leaderboard_entries?select=id&limit=1`, {
             headers: { apikey: cfg.key, Authorization: `Bearer ${cfg.key}` },
             signal: AbortSignal.timeout(2500),
@@ -408,18 +512,29 @@ async function startServer() {
             headers: { apikey: cfg.key, Authorization: `Bearer ${cfg.key}` },
             signal: AbortSignal.timeout(2500),
           }),
+          fetch(`${cfg.url}/rest/v1/rpc/login_player`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              apikey: cfg.key,
+              Authorization: `Bearer ${cfg.key}`,
+            },
+            body: JSON.stringify({ p_email: '', p_password: '' }),
+            signal: AbortSignal.timeout(2500),
+          }),
         ]);
         supabaseConnected = lbProbe.ok;
         profilesReady = profProbe.ok;
         feedbackReady = fbProbe.ok;
+        accountsReady = accRpcProbe.status !== 404;
         if (!lbProbe.ok) {
           supabaseNote =
             lbProbe.status === 404
               ? 'Missing public.leaderboard_entries table — run supabase/schema.sql'
               : `HTTP ${lbProbe.status}`;
-        } else if (!profilesReady || !feedbackReady) {
+        } else if (!profilesReady || !feedbackReady || !accountsReady) {
           supabaseNote =
-            'Leaderboard live ✓ — run updated supabase/schema.sql to enable Accounts & Feedback tables in Supabase';
+            'Leaderboard live ✓ — run updated supabase/schema.sql to enable Secure Accounts & Feedback in Supabase';
         }
       } catch {
         supabaseNote = 'Connection timed out';
@@ -442,6 +557,7 @@ async function startServer() {
           leaderboard: supabaseConnected,
           profiles: profilesReady,
           feedback: feedbackReady,
+          accountsRpc: accountsReady,
         },
         note: supabaseNote,
       },
@@ -556,13 +672,23 @@ async function startServer() {
         return;
       }
 
-      const [profProbe, fbProbe] = await Promise.all([
+      const [profProbe, fbProbe, accRpcProbe] = await Promise.all([
         fetch(`${cfg.url}/rest/v1/player_profiles?select=id&limit=1`, {
           headers: { apikey: cfg.key, Authorization: `Bearer ${cfg.key}` },
           signal: AbortSignal.timeout(2500),
         }),
         fetch(`${cfg.url}/rest/v1/player_feedback?select=id&limit=1`, {
           headers: { apikey: cfg.key, Authorization: `Bearer ${cfg.key}` },
+          signal: AbortSignal.timeout(2500),
+        }),
+        fetch(`${cfg.url}/rest/v1/rpc/login_player`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            apikey: cfg.key,
+            Authorization: `Bearer ${cfg.key}`,
+          },
+          body: JSON.stringify({ p_email: '', p_password: '' }),
           signal: AbortSignal.timeout(2500),
         }),
       ]);
@@ -576,6 +702,7 @@ async function startServer() {
       const missingExtra: string[] = [];
       if (!profProbe.ok) missingExtra.push('player_profiles');
       if (!fbProbe.ok) missingExtra.push('player_feedback');
+      if (accRpcProbe.status === 404) missingExtra.push('register_player/login_player RPCs');
 
       res.json({
         configured: true,
@@ -586,7 +713,7 @@ async function startServer() {
         schemaSql: LEADERBOARD_SCHEMA_SQL,
         note:
           missingExtra.length === 0
-            ? `Supabase connected! All 3 tables verified & synced ${syncedCount} leaderboard record(s).`
+            ? `Supabase connected! All tables & account RPCs verified & synced ${syncedCount} leaderboard record(s).`
             : `Leaderboard connected (${syncedCount} synced). Run updated supabase/schema.sql to add: ${missingExtra.join(', ')}.`,
       });
     } catch {
@@ -603,18 +730,17 @@ async function startServer() {
 
   app.post('/api/auth/signup', async (req, res) => {
     const body = req.body as {
-      id?: string;
       email?: string;
       password?: string;
       rangerName?: string;
       xp?: number;
-      provider?: 'supabase' | 'google' | 'server';
     };
     const email = String(body?.email || '').trim().toLowerCase();
     const password = String(body?.password || '');
     const rangerName = String(body?.rangerName || 'Ranger').trim().slice(0, 28) || 'Ranger';
+    const initialXp = Math.max(0, Math.round(Number(body?.xp || 0)));
 
-    if (!email.includes('@') || email.length < 5) {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       res.status(400).json({ error: 'Valid email is required.' });
       return;
     }
@@ -623,53 +749,71 @@ async function startServer() {
       return;
     }
 
-    const existing = serverAccountsByEmail.get(email);
-    if (existing && existing.passwordHash && !body.id) {
-      res.status(409).json({ error: 'Account already exists for this email. Please sign in.' });
-      return;
-    }
-
     const cfg = getSupabaseRestConfig();
-    let supabaseUserId = body.id ? String(body.id).slice(0, 64) : '';
-    let provider: 'supabase' | 'google' | 'server' = body.provider || 'server';
-
-    if (cfg && !supabaseUserId) {
+    if (cfg) {
       try {
-        const authRes = await fetch(`${cfg.url}/auth/v1/signup`, {
+        const rpcRes = await fetch(`${cfg.url}/rest/v1/rpc/register_player`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             apikey: cfg.key,
+            Authorization: `Bearer ${cfg.key}`,
           },
           body: JSON.stringify({
-            email,
-            password,
-            data: { ranger_name: rangerName },
+            p_email: email,
+            p_password: password,
+            p_ranger_name: rangerName,
+            p_xp: initialXp,
           }),
-          signal: AbortSignal.timeout(3500),
+          signal: AbortSignal.timeout(4000),
         });
-        if (authRes.ok) {
-          const authJson = (await authRes.json()) as { user?: { id?: string }; id?: string };
-          const uid = authJson.user?.id || authJson.id;
-          if (uid) {
-            supabaseUserId = String(uid);
-            provider = 'supabase';
-          }
+        const rpcJson = (await rpcRes.json().catch(() => null)) as {
+          id?: string;
+          email?: string;
+          ranger_name?: string;
+          xp?: number;
+          message?: string;
+        } | null;
+
+        if (rpcRes.ok && rpcJson?.id) {
+          res.status(201).json({
+            ok: true,
+            account: {
+              id: rpcJson.id,
+              email: rpcJson.email || email,
+              rangerName: rpcJson.ranger_name || rangerName,
+              provider: 'supabase_db',
+              xp: Number(rpcJson.xp || initialXp),
+              syncedToDb: true,
+            },
+          });
+          return;
+        }
+        const msg = rpcJson?.message || '';
+        if (msg.toLowerCase().includes('already exists')) {
+          res.status(409).json({ error: 'Account already exists for this email. Please sign in.' });
+          return;
         }
       } catch {
-        // fallback cleanly to server account creation
+        // fallback cleanly to server scrypt store
       }
     }
 
+    const existing = serverAccountsByEmail.get(email);
+    if (existing && existing.passwordHash) {
+      res.status(409).json({ error: 'Account already exists for this email. Please sign in.' });
+      return;
+    }
+
     const { hash, salt } = hashPassword(password);
-    const id = supabaseUserId || `acc-${crypto.randomUUID()}`;
-    const xp = Math.max(existing?.xp ?? 0, Math.max(0, Math.round(Number(body?.xp || 0))));
+    const id = `acc-${crypto.randomUUID()}`;
+    const xp = Math.max(existing?.xp ?? 0, initialXp);
 
     const stored: ServerAccountRecord = {
       id,
       email,
       rangerName,
-      provider,
+      provider: 'server',
       passwordHash: hash,
       salt,
       xp,
@@ -692,7 +836,7 @@ async function startServer() {
             id: stored.id,
             email: stored.email,
             ranger_name: stored.rangerName,
-            auth_provider: stored.provider,
+            auth_provider: 'server',
             xp: stored.xp,
           }),
           signal: AbortSignal.timeout(3000),
@@ -711,7 +855,7 @@ async function startServer() {
         rangerName: stored.rangerName,
         provider: stored.provider,
         xp: stored.xp,
-        syncedToDb: syncedSupabase || provider === 'supabase',
+        syncedToDb: syncedSupabase,
       },
     });
   });
@@ -721,52 +865,52 @@ async function startServer() {
     const email = String(body?.email || '').trim().toLowerCase();
     const password = String(body?.password || '');
 
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !password) {
+      res.status(400).json({ error: 'Please enter both email and password.' });
+      return;
+    }
+
     const cfg = getSupabaseRestConfig();
     if (cfg) {
       try {
-        const authRes = await fetch(`${cfg.url}/auth/v1/token?grant_type=password`, {
+        const rpcRes = await fetch(`${cfg.url}/rest/v1/rpc/login_player`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             apikey: cfg.key,
+            Authorization: `Bearer ${cfg.key}`,
           },
-          body: JSON.stringify({ email, password }),
-          signal: AbortSignal.timeout(3500),
+          body: JSON.stringify({
+            p_email: email,
+            p_password: password,
+          }),
+          signal: AbortSignal.timeout(4000),
         });
-        if (authRes.ok) {
-          const authJson = (await authRes.json()) as {
-            user?: { id: string; user_metadata?: { ranger_name?: string } };
-          };
-          if (authJson.user?.id) {
-            let rangerName = authJson.user.user_metadata?.ranger_name || email.split('@')[0];
-            let xp = 0;
-            const profRes = await fetch(
-              `${cfg.url}/rest/v1/player_profiles?select=ranger_name,xp&id=eq.${encodeURIComponent(authJson.user.id)}&limit=1`,
-              {
-                headers: { apikey: cfg.key, Authorization: `Bearer ${cfg.key}` },
-                signal: AbortSignal.timeout(2500),
-              },
-            );
-            if (profRes.ok) {
-              const rows = (await profRes.json()) as Array<{ ranger_name?: string; xp?: number }>;
-              if (rows[0]) {
-                rangerName = rows[0].ranger_name || rangerName;
-                xp = Number(rows[0].xp || 0);
-              }
-            }
-            res.json({
-              ok: true,
-              account: {
-                id: authJson.user.id,
-                email,
-                rangerName,
-                provider: 'supabase',
-                xp,
-                syncedToDb: true,
-              },
-            });
-            return;
-          }
+        const rpcJson = (await rpcRes.json().catch(() => null)) as {
+          id?: string;
+          email?: string;
+          ranger_name?: string;
+          xp?: number;
+          message?: string;
+        } | null;
+
+        if (rpcRes.ok && rpcJson?.id) {
+          res.json({
+            ok: true,
+            account: {
+              id: rpcJson.id,
+              email: rpcJson.email || email,
+              rangerName: rpcJson.ranger_name || 'Ranger',
+              provider: 'supabase_db',
+              xp: Number(rpcJson.xp || 0),
+              syncedToDb: true,
+            },
+          });
+          return;
+        }
+        if (rpcRes.status !== 404 && rpcJson?.message?.toLowerCase().includes('invalid')) {
+          res.status(401).json({ error: 'Invalid email or password.' });
+          return;
         }
       } catch {
         // fall through to local server verification
@@ -801,7 +945,7 @@ async function startServer() {
       id?: string;
       email?: string;
       rangerName?: string;
-      provider?: 'supabase' | 'google' | 'server';
+      provider?: 'supabase_db' | 'server';
       xp?: number;
       equippedSkins?: Record<string, string>;
     };
@@ -815,7 +959,7 @@ async function startServer() {
       id: String(body.id).slice(0, 64),
       email,
       rangerName: String(body.rangerName || prev?.rangerName || 'Ranger').slice(0, 28),
-      provider: body.provider || prev?.provider || 'server',
+      provider: body.provider === 'supabase_db' ? 'supabase_db' : prev?.provider || 'server',
       passwordHash: prev?.passwordHash,
       salt: prev?.salt,
       xp: Math.max(prev?.xp ?? 0, Math.max(0, Math.round(Number(body.xp || 0)))),
@@ -827,25 +971,22 @@ async function startServer() {
     const cfg = getSupabaseRestConfig();
     if (cfg) {
       try {
-        const sbRes = await fetch(`${cfg.url}/rest/v1/player_profiles?on_conflict=id`, {
+        const rpcRes = await fetch(`${cfg.url}/rest/v1/rpc/sync_player_xp`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             apikey: cfg.key,
             Authorization: `Bearer ${cfg.key}`,
-            Prefer: 'resolution=merge-duplicates,return=minimal',
           },
           body: JSON.stringify({
-            id: updated.id,
-            email: updated.email,
-            ranger_name: updated.rangerName,
-            auth_provider: updated.provider,
-            xp: updated.xp,
-            equipped_skins: body.equippedSkins ?? {},
+            p_id: updated.id,
+            p_email: updated.email,
+            p_xp: updated.xp,
+            p_skins: body.equippedSkins ?? {},
           }),
           signal: AbortSignal.timeout(3000),
         });
-        syncedSupabase = sbRes.ok;
+        syncedSupabase = rpcRes.ok;
       } catch {
         // ignore cleanly
       }

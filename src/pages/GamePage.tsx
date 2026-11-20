@@ -34,10 +34,8 @@ import {
   ZoomIn,
   MessageSquarePlus,
   UserCheck,
-  UserCircle2,
 } from 'lucide-react';
 import { soundEngine } from '../audio/soundEngine';
-import { AuthModal } from '../components/AuthModal';
 import { CustomGlbModal } from '../components/CustomGlbModal';
 import { FeedbackModal } from '../components/FeedbackModal';
 import { FieldGuideModal } from '../components/FieldGuideModal';
@@ -48,12 +46,7 @@ import { RecordsModal } from '../components/RecordsModal';
 import { TouchControls } from '../components/TouchControls';
 import { TutorialOverlay } from '../components/TutorialOverlay';
 import { ALL_CHARACTERS, ANIMALS, FIELD_GUIDE_SPECIES, SPECIES_RARITY_META } from '../data/animals';
-import {
-  AuthAccount,
-  loadActiveAccount,
-  syncCurrentAccountXp,
-} from '../data/auth';
-import { subscribeGoogleAuth } from '../data/googleAuthSheets';
+import { AuthAccount, syncCurrentAccountXp } from '../data/auth';
 import { BIOMES, BIOME_LIST } from '../data/biomes';
 import { getConservationEnding, loadConservationMap } from '../data/conservation';
 import { getDailyExpedition, getWeeklyChallenge } from '../data/dailyExpedition';
@@ -102,6 +95,8 @@ import {
 } from '../types/game';
 
 interface GamePageProps {
+  account: AuthAccount;
+  onOpenAuth: () => void;
   initialMode?: GameMode;
   initialDaily?: boolean;
   onNavigateHome: () => void;
@@ -115,6 +110,8 @@ function pushAnalyticsEvent(name: string, payload: Record<string, unknown>) {
 }
 
 export function GamePage({
+  account,
+  onOpenAuth,
   initialMode = 'wild_life',
   initialDaily = false,
   onNavigateHome,
@@ -124,7 +121,9 @@ export function GamePage({
   const daily = useMemo(() => getDailyExpedition(), []);
 
   const [screen, setScreen] = useState<'setup' | 'playing'>('setup');
-  const [playerName, setPlayerName] = useState<string>(() => getLastPlayerName());
+  const [playerName, setPlayerName] = useState<string>(
+    () => account.rangerName || getLastPlayerName(),
+  );
   const [nameError, setNameError] = useState('');
 
   const [isDailyMode, setIsDailyMode] = useState<boolean>(initialDaily);
@@ -162,9 +161,7 @@ export function GamePage({
   const [coopTransport, setCoopTransport] = useState<CoopTransportKind>('offline');
   const [coopToast, setCoopToast] = useState('');
 
-  // Account & Post-Game Feedback State
-  const [account, setAccount] = useState<AuthAccount | null>(() => loadActiveAccount());
-  const [showAuthModal, setShowAuthModal] = useState(false);
+  // Post-Game Feedback State
   const [showFeedbackModal, setShowFeedbackModal] = useState(false);
 
   // Audio, Modals & Tutorial
@@ -191,15 +188,10 @@ export function GamePage({
   const previousSpawnsRef = useRef<Array<{ x: number; z: number }>>([]);
 
   useEffect(() => {
-    const unsub = subscribeGoogleAuth(() => {});
-    return unsub;
-  }, []);
-
-  useEffect(() => {
-    if (account?.rangerName && !playerName.trim()) {
+    if (account.rangerName && !playerName.trim()) {
       setPlayerName(account.rangerName);
     }
-  }, [account, playerName]);
+  }, [account.rangerName, playerName]);
 
   useEffect(() => {
     if (initialDaily) {
@@ -712,24 +704,11 @@ export function GamePage({
               </button>
               <button
                 type="button"
-                onClick={() => setShowAuthModal(true)}
-                className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-semibold ${
-                  account
-                    ? 'border-emerald-400/45 bg-emerald-500/15 text-emerald-200 hover:bg-emerald-500/25'
-                    : 'border-white/20 bg-slate-900 text-slate-100 hover:border-emerald-400/50'
-                }`}
+                onClick={onOpenAuth}
+                className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-400/45 bg-emerald-500/15 px-3 py-2 text-xs font-semibold text-emerald-200 hover:bg-emerald-500/25"
               >
-                {account ? (
-                  <>
-                    <UserCheck className="h-3.5 w-3.5 text-emerald-300" />
-                    <span>{account.rangerName}</span>
-                  </>
-                ) : (
-                  <>
-                    <UserCircle2 className="h-3.5 w-3.5 text-emerald-300" />
-                    <span>Login / Sign Up</span>
-                  </>
-                )}
+                <UserCheck className="h-3.5 w-3.5 text-emerald-300" />
+                <span>{account.rangerName}</span>
               </button>
               <PWAInstallButton lang={lang} />
             </div>
@@ -1155,17 +1134,6 @@ export function GamePage({
           <CustomGlbModal
             onClose={() => setShowGlbModal(false)}
             onModelUpdated={() => sceneRef.current?.rebuildPlayerModel()}
-          />
-        )}
-        {showAuthModal && (
-          <AuthModal
-            account={account}
-            onAuthChange={(next) => {
-              setAccount(next);
-              setProg(loadProgression());
-              if (next?.rangerName) setPlayerName(next.rangerName);
-            }}
-            onClose={() => setShowAuthModal(false)}
           />
         )}
       </div>
@@ -2243,17 +2211,6 @@ export function GamePage({
         />
       )}
       {showRecords && <RecordsModal records={records} onClose={() => setShowRecords(false)} />}
-      {showAuthModal && (
-        <AuthModal
-          account={account}
-          onAuthChange={(next) => {
-            setAccount(next);
-            setProg(loadProgression());
-            if (next?.rangerName) setPlayerName(next.rangerName);
-          }}
-          onClose={() => setShowAuthModal(false)}
-        />
-      )}
       {showFeedbackModal && snap && (
         <FeedbackModal
           playerName={playerName}
@@ -2264,10 +2221,6 @@ export function GamePage({
           round={snap.round}
           score={snap.score}
           victory={snap.phase === 'victory'}
-          onAuthChange={(next) => {
-            setAccount(next);
-            if (next?.rangerName) setPlayerName(next.rangerName);
-          }}
           onClose={() => setShowFeedbackModal(false)}
         />
       )}

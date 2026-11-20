@@ -1,7 +1,7 @@
 # Wild Pakistan – The Last Wilderness
 
-**Play Live on GitHub Pages:** https://talha2281.github.io/Wild-Pakistan/  
-**GitHub Repository:** https://github.com/Talha2281/Wild-Pakistan
+**Play Live on GitHub Pages:** https://talha2281.github.io/wilds-pakistan/  
+**GitHub Repository:** https://github.com/Talha2281/wilds-pakistan
 
 **Wild Pakistan – The Last Wilderness** is a free, browser-based 3D WebGL wildlife survival, anti-poaching Ranger Patrol, and wildlife Photo Safari conservation game set across five iconic Pakistani ecosystems. Built with Three.js, React, TypeScript, Tailwind CSS, procedural Web Audio synthesis, Supabase, Firebase Google Sheets feedback integration, and offline-ready PWA support.
 
@@ -38,7 +38,7 @@
 - **Installable PWA**: Install directly on Android, iOS Safari, or desktop for offline play.
 
 ### 4. Free Ranger Accounts, Shared Leaderboards & Google Sheets Feedback
-- **Free Signup & Login**: Players can register free with Email & Password (powered by **Supabase Auth + PostgreSQL `player_profiles`** with Express server fallback) or **Sign in with Google**, automatically syncing XP, coat skins, and callsigns.
+- **Mandatory Secure Login & Free Database Accounts**: Players register/log in instantly with Email & Password (powered by **Supabase PostgreSQL `pgcrypto` bcrypt RPCs** — zero confirmation emails, Express server `scrypt` & WebCrypto fallbacks), automatically gating wilderness entry and syncing XP, coat skins, and callsigns.
 - **Shared Hall of Rangers**: All-Time, Daily, and Weekly leaderboards persisted to Supabase (`leaderboard_entries`).
 - **Post-Game Feedback Popup -> Google Sheets**: Automatically prompts after an expedition finishes, saving ratings and comments to Supabase (`player_feedback`) and appending rows directly to a linked **Google Sheet** via the official Google Sheets v4 API.
 

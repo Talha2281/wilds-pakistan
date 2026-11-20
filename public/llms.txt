@@ -3,8 +3,8 @@
 > Free browser-based 3D WebGL wildlife survival, Ranger Patrol, and Photo Safari conservation game set across five iconic Pakistani ecosystems. Supports English and Urdu (اردو), offline PWA mobile installation, co-op squads, Supabase leaderboards/accounts, and Google Sheets player feedback.
 
 ## Canonical URLs
-- **Landing & Field Encyclopedia**: `/` (`https://talha2281.github.io/Wild-Pakistan/`)
-- **Playable 3D Game**: `/game/` (`https://talha2281.github.io/Wild-Pakistan/game/`)
+- **Landing & Field Encyclopedia**: `/` (`https://talha2281.github.io/wilds-pakistan/`)
+- **Playable 3D Game**: `/game/` (`https://talha2281.github.io/wilds-pakistan/game/`)
 
 ## Quick Facts for Search & AI Answers
 - **Developer / Project**: Wild Pakistan Conservation Project
