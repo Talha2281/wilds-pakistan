@@ -1114,6 +1114,10 @@ async function startServer() {
   });
 
 
+  app.get('/google65279c545b3dd3d2.html', (_req, res) => {
+    res.type('text/html').send('google-site-verification: google65279c545b3dd3d2.html');
+  });
+
   if (!IS_PROD) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({

@@ -552,6 +552,14 @@ function runSmokeTests() {
   assert.ok(readme.includes('Wild Pakistan'), 'README.md must exist and document Wild Pakistan');
   const indexHtml = fs.readFileSync(path.join(rootDir, 'index.html'), 'utf8');
   assert.ok(indexHtml.includes('"@type": ["VideoGame", "WebApplication"]') && indexHtml.includes('FAQPage'), 'index.html must include VideoGame/WebApplication & FAQPage JSON-LD');
+  assert.ok(indexHtml.includes('GTM-M9MM7V2P'), 'index.html must include GTM-M9MM7V2P Analytics & Tag Manager');
+  const gameHtml = fs.readFileSync(path.join(rootDir, 'game/index.html'), 'utf8');
+  assert.ok(gameHtml.includes('GTM-M9MM7V2P'), 'game/index.html must include GTM-M9MM7V2P Analytics & Tag Manager');
+  const gscVerify = fs.readFileSync(path.join(rootDir, 'public/google65279c545b3dd3d2.html'), 'utf8');
+  assert.ok(
+    gscVerify.trim() === 'google-site-verification: google65279c545b3dd3d2.html',
+    'Google Search Console verification file must exist in public/',
+  );
   const llmsTxt = fs.readFileSync(path.join(rootDir, 'public/llms.txt'), 'utf8');
   assert.ok(llmsTxt.includes('Rarity') && llmsTxt.includes('Ranger Toolkit'), 'public/llms.txt must document Photo Safari Rarity & Ranger Toolkit for AEO/GEO');
 
